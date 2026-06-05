@@ -1,0 +1,16 @@
+# Virtual Environment - 200MB of libraries, never upload
+venv/
+
+# Secrets - NEVER commit this file ever
+.env
+
+# Python auto-generated cache
+__pycache__/
+*.pyc
+*.pyo
+
+# VS Code settings
+.vscode/
+
+# Local vector database - rebuilt by ingest.py
+chroma_db/
