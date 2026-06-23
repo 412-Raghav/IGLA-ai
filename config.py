@@ -1,11 +1,12 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
+CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 if not ANTHROPIC_API_KEY:
     raise ValueError(
         "ANTHROPIC_API_KEY not found."
-        "CHEck .env file exists and has the key. "
+        "CHECK .env file exists and has the key. "
     )
 
 MODEL_NAME = "claude-sonnet-4-6"
