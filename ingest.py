@@ -24,27 +24,53 @@ def _upsert_docs(collection, docs, label):
     logger.info("Ingested %d %s documents.", len(docs), label)
 
 
-def ingest_documents():
-    """Populate ChromaDB with tactical documents.
+def ingest_static_docs():
+    """Upsert the static tactical corpus.
 
-    Static docs always ingest, so the corpus is never empty. Live vlr.gg
-    docs are best-effort per team: a failed fetch is logged and skipped so
-    the app still boots. Upsert-by-id makes re-runs idempotent.
+    Cheap, idempotent, network-free — so the corpus is never empty even if
+    every live scrape fails.
     """
     collection = get_or_create_collection()
-
-    # 1. Static corpus — always present, never depends on the network.
     _upsert_docs(collection, TACTICAL_DOCUMENTS, label="static tactical")
 
-    # 2. Live vlr.gg tendencies — best-effort, must never block startup.
+
+def refresh_live_data():
+    """Re-scrape vlr.gg tendencies for every tracked team and upsert them.
+
+    Best-effort per team: a failed scrape is logged and skipped so one broken
+    team never aborts the rest. This is what the scheduler runs on a cadence.
+    """
+    collection = get_or_create_collection()
     for team_id in TEAMS:
         try:
             live_docs = fetch_team_tendencies(team_id)
         except Exception:
-            logger.exception("Live vlr.gg fetch failed for team_id=%s; skipping.", team_id)
+            logger.exception(
+                "Live vlr.gg fetch failed for team_id=%s; skipping.", team_id
+            )
             continue
         _upsert_docs(collection, live_docs, label=f"vlr.gg team {team_id}")
+    logger.info("Live tendency refresh complete.")
 
+
+def has_live_data():
+    """True if the DB already holds docs beyond the static corpus.
+
+    Lets the app skip a cold-start scrape when the volume already carries
+    live data from a previous run.
+    """
+    collection = get_or_create_collection()
+    return collection.count() > len(TACTICAL_DOCUMENTS)
+
+
+def ingest_documents():
+    """Full ingest: static corpus, then a live refresh.
+
+    For manual/local runs (python ingest.py). The deployed app calls
+    ingest_static_docs() and schedules refresh_live_data() instead.
+    """
+    ingest_static_docs()
+    refresh_live_data()
     logger.info("Vector database is ready for queries.")
 
 
