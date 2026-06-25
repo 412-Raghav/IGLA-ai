@@ -4,6 +4,7 @@ load_dotenv()
 REFRESH_INTERVAL_HOURS = int(os.getenv("REFRESH_INTERVAL_HOURS", "24"))
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+SCOPE_THRESHOLD = float(os.getenv("SCOPE_THRESHOLD", "0.75"))
 if not ANTHROPIC_API_KEY:
     raise ValueError(
         "ANTHROPIC_API_KEY not found."
