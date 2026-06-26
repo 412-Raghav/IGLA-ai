@@ -3,25 +3,29 @@ import threading
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from config import REFRESH_INTERVAL_HOURS
 from ingest import has_live_data, ingest_static_docs, refresh_live_data
 from main import ask_igla
 
-# Ingestion now runs inside this process (not via ingest.py's __main__), so
-# configure logging here too or its INFO logs won't reach the Railway logs.
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("igla")
+
+# Rate limiter keyed on client IP. In-memory store: counts reset on restart
+# and are per-replica — fine for a single replica; Redis is the multi-replica
+# upgrade path.
+limiter = Limiter(key_func=get_remote_address)
 
 scheduler = BackgroundScheduler()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: guarantee the static corpus, then move the live refresh onto a
-    # schedule instead of running it on every boot.
     ingest_static_docs()
 
     scheduler.add_job(
@@ -34,19 +38,20 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
 
-    # Cold-start safety: if the volume holds no live data (fresh or wiped),
-    # fetch once now in the background so we don't serve static-only for hours.
     if not has_live_data():
         logger.info("No live data on startup; running an immediate refresh.")
         threading.Thread(target=refresh_live_data, daemon=True).start()
 
     yield
 
-    # Shutdown: stop the scheduler without blocking on an in-flight scrape.
     scheduler.shutdown(wait=False)
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Wire the limiter into the app and register the 429 handler.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 class SituationRequest(BaseModel):
@@ -54,6 +59,11 @@ class SituationRequest(BaseModel):
 
 
 @app.post("/ask")
-def ask_endpoint(request: SituationRequest):
-    response = ask_igla(request.situation)
+@limiter.limit("10/minute")
+def ask_endpoint(request: Request, situation_request: SituationRequest):
+    response = ask_igla(situation_request.situation)
     return {"response": response}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
