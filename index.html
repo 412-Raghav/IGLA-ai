@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IGLA — In-Game Leader AI</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 16px;
+      background: #0f1115;
+      color: #e6e6e6;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    p { color: #9aa0a6; }
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 12px;
+      font-size: 1rem;
+      background: #1a1d23;
+      color: #e6e6e6;
+      border: 1px solid #333;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }
+    button {
+      margin-top: 12px;
+      padding: 10px 20px;
+      font-size: 1rem;
+      background: #e23636;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #response {
+      margin-top: 24px;
+      padding: 16px;
+      background: #1a1d23;
+      border: 1px solid #333;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      min-height: 40px;
+    }
+  </style>
+</head>
+<body>
+  <h1>IGLA — In-Game Leader AI</h1>
+  <p>Describe a pre-match scenario. IGLA returns a tactical read.</p>
+
+  <textarea id="situation" placeholder="e.g. We're playing Paper Rex on Ascent. How do they tend to attack B site?"></textarea>
+  <button id="submit">Get tactical read</button>
+
+  <div id="response"></div>
+
+  <script>
+    const API_URL = "https://web-production-1eb4e.up.railway.app/ask";
+
+    const submitBtn = document.getElementById("submit");
+    const situationBox = document.getElementById("situation");
+    const responseBox = document.getElementById("response");
+
+    submitBtn.addEventListener("click", async () => {
+      const situation = situationBox.value.trim();
+      if (!situation) {
+        responseBox.textContent = "Type a scenario first.";
+        return;
+      }
+
+      submitBtn.disabled = true;
+      responseBox.textContent = "Thinking…";
+
+      try {
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ situation: situation }),
+        });
+
+        if (!res.ok) {
+          responseBox.textContent = `Error ${res.status}: ${res.statusText}`;
+          return;
+        }
+
+        const data = await res.json();
+        responseBox.textContent = data.response ?? JSON.stringify(data, null, 2);
+      } catch (err) {
+        responseBox.textContent = `Request failed: ${err.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
