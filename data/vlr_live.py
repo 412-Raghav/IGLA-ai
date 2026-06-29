@@ -10,6 +10,8 @@ import logging
 
 import vlrdevapi as vlr
 
+from rag.agent_roles import derive_player_role, role_phrase
+
 logger = logging.getLogger("igla")
 
 DEFAULT_TIMESPAN = "90d"
@@ -17,8 +19,10 @@ DEFAULT_TIMESPAN = "90d"
 
 def build_player_document(team, player, stats, timespan):
     """Render one player's recent agent tendencies as a tactical document."""
+    role = role_phrase(derive_player_role(stats))
     lines = [
         f"{team.tag} — {player.ign} ({player.real_name}), {player.role}. "
+        f"Role: {role}. "
         f"Nationality: {player.country}."
     ]
     if stats:
@@ -46,7 +50,7 @@ def build_player_document(team, player, stats, timespan):
             "team_id": team.team_id,
             "player": player.ign,
             "player_id": player.player_id,
-            "role": player.role,
+            "role": derive_player_role(stats),
             "timespan": timespan,
             "agents": ", ".join(a.agent for a in stats) if stats else "",
             "ingested_at": dt.datetime.now(dt.timezone.utc).isoformat(),
