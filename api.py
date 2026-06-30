@@ -1,16 +1,17 @@
 import logging
+import secrets
 import threading
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from config import REFRESH_INTERVAL_HOURS
+from config import REFRESH_INTERVAL_HOURS, REFRESH_TOKEN
 from ingest import has_live_data, ingest_static_docs, refresh_live_data
 from main import ask_igla
 
@@ -73,6 +74,20 @@ class SituationRequest(BaseModel):
 def ask_endpoint(request: Request, situation_request: SituationRequest):
     response = ask_igla(situation_request.situation)
     return {"response": response}
+
+
+@app.post("/refresh", status_code=202)
+def refresh_endpoint(x_refresh_token: str | None = Header(None)):
+    if (
+        not REFRESH_TOKEN
+        or not x_refresh_token
+        or not secrets.compare_digest(x_refresh_token, REFRESH_TOKEN)
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    logger.info("Authorized refresh triggered; starting in background.")
+    threading.Thread(target=refresh_live_data, daemon=True).start()
+    return {"status": "refresh started"}
 
 
 @app.get("/health")
