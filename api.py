@@ -3,7 +3,6 @@ import secrets
 import threading
 from contextlib import asynccontextmanager
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from config import REFRESH_INTERVAL_HOURS, REFRESH_TOKEN
+from config import REFRESH_TOKEN
 from ingest import has_live_data, ingest_static_docs, refresh_live_data
 from main import ask_igla
 
@@ -23,30 +22,16 @@ logger = logging.getLogger("igla")
 # upgrade path.
 limiter = Limiter(key_func=get_remote_address)
 
-scheduler = BackgroundScheduler()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ingest_static_docs()
-
-    scheduler.add_job(
-        refresh_live_data,
-        trigger="interval",
-        hours=REFRESH_INTERVAL_HOURS,
-        id="vlr_refresh",
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
 
     if not has_live_data():
         logger.info("No live data on startup; running an immediate refresh.")
         threading.Thread(target=refresh_live_data, daemon=True).start()
 
     yield
-
-    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(lifespan=lifespan)
