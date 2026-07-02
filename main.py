@@ -2,7 +2,8 @@ import logging
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, MODEL_NAME, MAX_TOKENS, SCOPE_THRESHOLD
+from config import MODEL_NAME, MAX_TOKENS, SCOPE_THRESHOLD
+from llm import client
 from rag.retriever import retrieve_context
 
 logging.basicConfig(
@@ -11,8 +12,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("igla")
-
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def ask_igla(situation: str) -> str:
