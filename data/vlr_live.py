@@ -17,6 +17,16 @@ logger = logging.getLogger("igla")
 DEFAULT_TIMESPAN = "90d"
 
 
+def _pct(value):
+    """Format a 0-1 stat as a percent, or 'N/A' if vlr.gg has no data."""
+    return f"{round(value * 100)}%" if value is not None else "N/A"
+
+
+def _num(value):
+    """Format a raw stat as-is, or 'N/A' if vlr.gg has no data."""
+    return value if value is not None else "N/A"
+
+
 def build_player_document(team, player, stats, timespan):
     """Render one player's recent agent tendencies as a tactical document."""
     role = role_phrase(derive_player_role(stats))
@@ -29,11 +39,12 @@ def build_player_document(team, player, stats, timespan):
         lines.append(f"Recent agent tendencies (last {timespan}):")
         for a in stats:
             lines.append(
-                f"- {a.agent.capitalize()}: {round(a.usage_percent * 100)}% of maps "
-                f"({a.usage_count} maps, {a.rounds_played} rounds). "
-                f"{a.rating} rating, {a.acs} ACS, {a.kd} K/D, {a.adr} ADR, "
-                f"{round(a.kast * 100)}% KAST. Entry: {a.fkpr} first kills/round, "
-                f"{a.fdpr} first deaths/round."
+                f"- {a.agent.capitalize()}: {_pct(a.usage_percent)} of maps "
+                f"({_num(a.usage_count)} maps, {_num(a.rounds_played)} rounds). "
+                f"{_num(a.rating)} rating, {_num(a.acs)} ACS, {_num(a.kd)} K/D, "
+                f"{_num(a.adr)} ADR, {_pct(a.kast)} KAST. "
+                f"Entry: {_num(a.fkpr)} first kills/round, "
+                f"{_num(a.fdpr)} first deaths/round."
             )
     else:
         lines.append(

@@ -1,6 +1,7 @@
 import logging
 
 from data.tactical_docs import TACTICAL_DOCUMENTS
+from data.team_registry import team_ids
 from data.vlr_live import fetch_team_tendencies
 from rag.embedder import get_or_create_collection
 
@@ -41,7 +42,7 @@ def refresh_live_data():
     team never aborts the rest. This is what the scheduler runs on a cadence.
     """
     collection = get_or_create_collection()
-    for team_id in TEAMS:
+    for team_id in team_ids():
         try:
             live_docs = fetch_team_tendencies(team_id)
         except Exception:

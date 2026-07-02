@@ -1,9 +1,10 @@
 """Verify team_id-scoped retrieval: the 9b keystone.
 
-Asserts three properties the eval harness can't (it bypasses the filter):
-  1. team_id=624 returns ONLY PRX docs + general docs (no Fnatic).
-  2. team_id=2593 returns ONLY Fnatic docs + general docs (no PRX).
-  3. team_id=None (default) returns the whole corpus unchanged.
+Corpus-size agnostic. For every tracked team, asserts that a team_id
+filter returns ONLY that team's docs plus the universal 'general'
+shelf -- never another team's docs. Also asserts the unfiltered path
+returns the whole corpus. The eval harness can't check this (it
+bypasses the filter), so this is the keystone's dedicated regression.
 
 Run from the project root:
     python -m evals.check_filter
@@ -11,42 +12,79 @@ Run from the project root:
 
 from rag.retriever import _build_where
 from rag.embedder import get_or_create_collection
+from data.team_registry import TRACKED_TEAMS
 
 
-def ids_for(collection, team_id, n=13):
-    """Return the set of doc IDs retrieved under a given team filter."""
-    results = collection.query(
-        query_texts=["team tactical tendencies"],
-        n_results=n,
-        where=_build_where(team_id),
-    )
-    return set(results["ids"][0])
+def team_id_of(metadata):
+    """Return a doc's team_id, or None if it's a general (scope) doc."""
+    return metadata.get("team_id")
+
+
+def is_general(metadata):
+    """True if the doc is on the universal shelf (no team)."""
+    return metadata.get("scope") == "general"
 
 
 def main():
     collection = get_or_create_collection()
+    total = collection.count()
+    print(f"Collection holds {total} docs.\n")
 
-    prx = ids_for(collection, 624)
-    fnc = ids_for(collection, 2593)
-    everything = ids_for(collection, None)
+    # Pull every doc's metadata once so we can reason about the corpus
+    # without re-querying per team.
+    everything = collection.get(include=["metadatas"])
+    all_meta = everything["metadatas"]
+    general_count = sum(1 for m in all_meta if is_general(m))
 
-    general = {"sage_killjoy_combo", "low_time_defense"}
-    fnc_docs = {"fnc_defensive_style", "fnc_ascent_defense"}
-    prx_static = {
-        "prx_general_style", "prx_lotus_a_execute",
-        "prx_haven_style", "prx_economy_habits",
-    }
+    all_pass = True
 
-    print("PRX filter (624) retrieved:", len(prx), "docs")
-    print("  contains general docs:", general <= prx)
-    print("  excludes Fnatic docs :", fnc_docs.isdisjoint(prx))
+    for team in TRACKED_TEAMS:
+        tid = team["team_id"]
+        name = team["name"]
 
-    print("\nFnatic filter (2593) retrieved:", len(fnc), "docs")
-    print("  contains general docs:", general <= fnc)
-    print("  excludes PRX static  :", prx_static.isdisjoint(fnc))
+        # Ask for the full corpus size so nothing is missed past a cutoff.
+        results = collection.query(
+            query_texts=["team tactical tendencies and playstyle"],
+            n_results=total,
+            where=_build_where(tid),
+        )
+        returned_meta = results["metadatas"][0]
 
-    print("\nNo filter (None) retrieved:", len(everything), "docs")
-    print("  sees full corpus:", len(everything) == collection.count())
+        # Every returned doc must belong to THIS team or be general.
+        wrong_team = [
+            m for m in returned_meta
+            if not is_general(m) and team_id_of(m) != tid
+        ]
+        has_general = any(is_general(m) for m in returned_meta)
+
+        ok = not wrong_team and has_general
+        all_pass = all_pass and ok
+
+        flag = "PASS" if ok else "FAIL"
+        print(
+            f"  [{flag}] {name:<16} (id {tid:<6}) "
+            f"returned {len(returned_meta):<3} docs, "
+            f"general included: {has_general}, "
+            f"foreign-team docs: {len(wrong_team)}"
+        )
+
+    # Unfiltered path must see the entire corpus.
+    unfiltered = collection.query(
+        query_texts=["team tactical tendencies and playstyle"],
+        n_results=total,
+        where=_build_where(None),
+    )
+    unfiltered_count = len(unfiltered["metadatas"][0])
+    corpus_ok = unfiltered_count == total
+    all_pass = all_pass and corpus_ok
+
+    print(
+        f"\n  [{'PASS' if corpus_ok else 'FAIL'}] unfiltered path "
+        f"returned {unfiltered_count}/{total} docs "
+        f"({general_count} general docs on the shelf)"
+    )
+
+    print(f"\n{'ALL CHECKS PASSED' if all_pass else 'SOME CHECKS FAILED'}")
 
 
 if __name__ == "__main__":
