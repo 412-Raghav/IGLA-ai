@@ -69,23 +69,41 @@ def build_player_document(team, player, stats, timespan):
     }
 
 
+def fetch_team_roster_stats(team_id, timespan=DEFAULT_TIMESPAN):
+    """Fetch one team's active roster with each player's raw agent stats.
+
+    Returns (team, roster_stats), where roster_stats is a list of
+    (player, stats) pairs. This is the raw material BOTH consumers read:
+    fetch_team_tendencies (live-ingest templating) and the build-time
+    brief-assembler in data/generate_docs.py -- so both draw from ONE
+    fetch path and can never drift apart.
+
+    Lets exceptions propagate so the caller decides whether to skip.
+    """
+    team = vlr.teams.info(team_id=team_id)
+    roster = vlr.teams.roster(team_id=team_id)
+    players = [m for m in roster if m.role == "Player"]
+    roster_stats = [
+        (p, vlr.players.agent_stats(player_id=p.player_id, timespan=timespan))
+        for p in players
+    ]
+    return team, roster_stats
+
+
 def fetch_team_tendencies(team_id, timespan=DEFAULT_TIMESPAN):
     """Fetch live agent tendencies for one team's active roster.
 
     Returns a list of document dicts. Lets exceptions propagate so the
     caller (ingest.py) decides whether to skip this team and continue.
     """
-    team = vlr.teams.info(team_id=team_id)
-    roster = vlr.teams.roster(team_id=team_id)
-    players = [m for m in roster if m.role == "Player"]
-
+    team, roster_stats = fetch_team_roster_stats(team_id, timespan)
     docs = [
-        build_player_document(
-            team, p, vlr.players.agent_stats(player_id=p.player_id, timespan=timespan), timespan
-        )
-        for p in players
+        build_player_document(team, p, stats, timespan)
+        for p, stats in roster_stats
     ]
-    logger.info("Fetched %d player docs for %s (team_id=%s)", len(docs), team.tag, team_id)
+    logger.info(
+        "Fetched %d player docs for %s (team_id=%s)", len(docs), team.tag, team_id
+    )
     return docs
 
 
