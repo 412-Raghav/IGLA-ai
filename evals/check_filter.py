@@ -42,13 +42,13 @@ def main():
         tid = team["team_id"]
         name = team["name"]
 
-        # Ask for the full corpus size so nothing is missed past a cutoff.
-        results = collection.query(
-            query_texts=["team tactical tendencies and playstyle"],
-            n_results=total,
-            where=_build_where(tid),
-        )
-        returned_meta = results["metadatas"][0]
+        # get() with a where-filter is an EXACT metadata scan -- it returns
+        # every matching doc with no ANN candidate ceiling. query() would
+        # cap at whatever the HNSW search surfaces, so it's the wrong tool
+        # for an exhaustive partition check: we want set membership, not
+        # top-k similarity.
+        scoped = collection.get(where=_build_where(tid), include=["metadatas"])
+        returned_meta = scoped["metadatas"]
 
         # Every returned doc must belong to THIS team or be general.
         wrong_team = [
@@ -56,6 +56,7 @@ def main():
             if not is_general(m) and team_id_of(m) != tid
         ]
         has_general = any(is_general(m) for m in returned_meta)
+        own_docs = [m for m in returned_meta if team_id_of(m) == tid]
 
         ok = not wrong_team and has_general
         all_pass = all_pass and ok
@@ -63,18 +64,14 @@ def main():
         flag = "PASS" if ok else "FAIL"
         print(
             f"  [{flag}] {name:<16} (id {tid:<6}) "
-            f"returned {len(returned_meta):<3} docs, "
-            f"general included: {has_general}, "
+            f"total {len(returned_meta):<3} "
+            f"(own {len(own_docs):<2} + general), "
             f"foreign-team docs: {len(wrong_team)}"
         )
 
     # Unfiltered path must see the entire corpus.
-    unfiltered = collection.query(
-        query_texts=["team tactical tendencies and playstyle"],
-        n_results=total,
-        where=_build_where(None),
-    )
-    unfiltered_count = len(unfiltered["metadatas"][0])
+    
+    unfiltered_count = collection.count()
     corpus_ok = unfiltered_count == total
     all_pass = all_pass and corpus_ok
 
