@@ -14,7 +14,7 @@ TACTICAL_DOCUMENTS = [
         with speed before setups can be established.
         Key tendency: PRX almost always execute before 60 seconds
         remaining on the clock. They hate slow rounds.""",
-        "metadata": {"team": "PRX", "category": "general", "map": "all", "team_id": 624}
+        "metadata": {"team": "PRX", "category": "general", "map": "all", "team_id": 624, "source": "curated"}
     },
     {
         "id": "prx_lotus_a_execute",
@@ -27,7 +27,7 @@ TACTICAL_DOCUMENTS = [
         this execute — no split. Counter: Early Killjoy lockdown
         on A site forces them to play through utility.
         Sage wall on A main delays their Jett entry.""",
-        "metadata": {"team": "PRX", "category": "execute", "map": "lotus", "team_id": 624}
+        "metadata": {"team": "PRX", "category": "execute", "map": "lotus", "team_id": 624, "source": "curated"}
     },
     {
         "id": "prx_haven_style",
@@ -39,7 +39,7 @@ TACTICAL_DOCUMENTS = [
         B is always a fake to rotate defenders before swinging A or C.
         If PRX is attacking B on Haven — it is a decoy 90% of the time.
         Counter: Do not rotate B until spike is down.""",
-        "metadata": {"team": "PRX", "category": "map_tendency", "map": "haven", "team_id": 624}
+        "metadata": {"team": "PRX", "category": "map_tendency", "map": "haven", "team_id": 624, "source": "curated"}
     },
     {
         "id": "prx_economy_habits",
@@ -51,7 +51,7 @@ TACTICAL_DOCUMENTS = [
         enemy economy rather than protecting their own guns.
         Counter on save rounds: Do not overcommit to pushes.
         Let PRX come to you — they always will.""",
-        "metadata": {"team": "PRX", "category": "economy", "map": "all", "team_id": 624}
+        "metadata": {"team": "PRX", "category": "economy", "map": "all", "team_id": 624, "source": "curated"}
     },
     {
         "id": "fnc_defensive_style",
@@ -64,7 +64,7 @@ TACTICAL_DOCUMENTS = [
         Key strength: FNC retakes are among the best in the world.
         They trust their retake ability so they play further back
         than most teams on defense.""",
-        "metadata": {"team": "FNC", "category": "general", "map": "all", "team_id": 2593}
+        "metadata": {"team": "FNC", "category": "general", "map": "all", "team_id": 2593, "source": "curated"}
     },
     {
         "id": "fnc_ascent_defense",
@@ -77,7 +77,7 @@ TACTICAL_DOCUMENTS = [
         FNC's weakness on Ascent defense: B site when Killjoy
         is rotating. Fast B executes before KJ can reposition
         have a high success rate against FNC historically.""",
-        "metadata": {"team": "FNC", "category": "defense", "map": "ascent", "team_id": 2593}
+        "metadata": {"team": "FNC", "category": "defense", "map": "ascent", "team_id": 2593, "source": "curated"}
     },
     {
         "id": "sage_killjoy_combo",
@@ -91,7 +91,7 @@ TACTICAL_DOCUMENTS = [
         forcing enemies into Lockdown radius without wall cover.
         Sage ult priority: Save for KJ if KJ dies before Lockdown pops.
         A living KJ with Lockdown beats a 5-stack execute 60% of the time.""",
-        "metadata": {"team": "general", "category": "agent_combo", "map": "all", "scope": "general"}
+        "metadata": {"team": "general", "category": "agent_combo", "map": "all", "scope": "general", "source": "curated"}
     },
     {
         "id": "low_time_defense",
@@ -107,6 +107,6 @@ TACTICAL_DOCUMENTS = [
         slow orbs, Sage wall. Each second of delay reduces
         enemy post-plant time.
         If outnumbered: Stall, do not fight. Let clock work for you.""",
-        "metadata": {"team": "general", "category": "timing", "map": "all", "scope": "general"}
+        "metadata": {"team": "general", "category": "timing", "map": "all", "scope": "general", "source": "curated"}
     }
 ]
