@@ -1,6 +1,14 @@
 from rag.embedder import get_or_create_collection
 
 
+# When a query is scoped to a team, pull a deeper candidate pool than the
+# caller asked for, so the team's own docs — which general-shelf docs can
+# out-rank on keyword-dense queries — are in hand to promote. Sized above the
+# largest per-team pool (~12 for Paper Rex) so the re-rank sees the full
+# scoped set, not a truncated view. Tunable; raise if pools grow.
+_RERANK_POOL = 20
+
+
 def _build_where(team_id):
     """Build a ChromaDB where-filter scoping retrieval to one team.
 
@@ -15,6 +23,64 @@ def _build_where(team_id):
     if team_id is None:
         return None
     return {"$or": [{"team_id": team_id}, {"scope": "general"}]}
+
+
+def _team_first_order(metadatas):
+    """Stable index order placing the scouted team's docs above the general
+    shelf. Returns indices (not docs) so ids, documents, and distances reorder
+    by one permutation and stay aligned -- the eval scores by id while serving
+    formats docs, so both must reorder identically.
+
+    General docs (scope == "general") sort after team docs; semantic
+    (distance-ascending) order is preserved within each group (stable sort).
+    """
+    return sorted(
+        range(len(metadatas)),
+        key=lambda i: metadatas[i].get("scope") == "general",
+    )
+
+
+def retrieve_ranked(
+    query: str, n_results: int = 3, team_id: int | None = None
+) -> tuple[list[str], list[str], float | None]:
+    """Query the collection and apply the team-first re-rank.
+
+    The single retrieval path. Returns (ids, documents, best_distance),
+    trimmed to n_results, with best_distance the true closest match captured
+    before the re-rank. retrieve_context formats the documents for the LLM;
+    the eval reads the ids to score rank -- so the eval exercises the exact
+    ranking production serves and cannot silently drift from it.
+    """
+    collection = get_or_create_collection()
+
+    # Scoped queries fetch a deeper pool to re-rank from; unscoped (global)
+    # queries keep the original behavior byte-for-byte.
+    fetch_k = _RERANK_POOL if team_id is not None else n_results
+
+    results = collection.query(
+        query_texts=[query],
+        n_results=fetch_k,
+        where=_build_where(team_id),
+        include=["documents", "distances", "metadatas"],
+    )
+    ids = results["ids"][0]
+    documents = results["documents"][0]
+    distances = results["distances"][0]
+    metadatas = results["metadatas"][0]
+
+    if not documents:
+        return [], [], None
+
+    # Captured before the re-rank: the scope-gate must keep seeing the true
+    # closest match, not the promoted team doc.
+    best_distance = distances[0]
+
+    if team_id is not None:
+        order = _team_first_order(metadatas)
+        ids = [ids[i] for i in order]
+        documents = [documents[i] for i in order]
+
+    return ids[:n_results], documents[:n_results], best_distance
 
 
 def retrieve_context(
@@ -36,22 +102,11 @@ def retrieve_context(
     Returns:
         (formatted_context, best_distance).
     """
-    collection = get_or_create_collection()
-
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results,
-        where=_build_where(team_id),
-        include=["documents", "distances"],
+    _, documents, best_distance = retrieve_ranked(
+        query, n_results=n_results, team_id=team_id
     )
-
-    documents = results["documents"][0]
-    distances = results["distances"][0]
-
     if not documents:
         return "No relevant tactical context found", None
-
-    best_distance = distances[0]
 
     context_parts = []
     for i, doc in enumerate(documents):

@@ -11,7 +11,7 @@ Run from the project root:
 
 from evals.golden_queries import GOLDEN_QUERIES
 from rag.embedder import get_or_create_collection
-from rag.retriever import _build_where
+from rag.retriever import retrieve_ranked
 
 # @1 = "was it the TOP result?" (strictest, single-best-answer).
 # @3 = "was it in the top 3?" (what the writer actually sees as context).
@@ -41,14 +41,9 @@ def main():
             skipped.append(query)
             continue
 
-        results = collection.query(
-            query_texts=[query],
-            n_results=MAX_K,
-            where=_build_where(entry.get("team_id")),
+        returned_ids, _, top_distance = retrieve_ranked(
+            query, n_results=MAX_K, team_id=entry.get("team_id")
         )
-        returned_ids = results["ids"][0]
-        distances = results["distances"][0]
-        top_distance = distances[0] if distances else None
 
         rank = rank_of(expected_id, returned_ids)
         scored.append((query, expected_id, rank, top_distance))
