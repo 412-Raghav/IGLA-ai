@@ -28,12 +28,31 @@ def _upsert_docs(collection, docs, label):
     logger.info("Ingested %d %s documents.", len(docs), label)
 
 
+def _validate_static_docs():
+    """Fail fast if any static doc lacks its scoping key.
+
+    Every static doc must carry exactly one of team_id (team-specific) or
+    scope (the general shelf). Neither field = silently unretrievable under
+    any team filter; both = muddies the team/general split. Enforced here so
+    the invariant is structural, not convention.
+    """
+    for doc in TACTICAL_DOCUMENTS:
+        md = doc["metadata"]
+        has_team = "team_id" in md
+        has_scope = "scope" in md
+        if has_team == has_scope:
+            raise ValueError(
+                f"{doc['id']}: metadata needs exactly one of team_id / scope"
+            )
+
+
 def ingest_static_docs():
     """Upsert the static tactical corpus.
 
     Cheap, idempotent, network-free — so the corpus is never empty even if
     every live scrape fails.
     """
+    _validate_static_docs()
     collection = get_or_create_collection()
     _upsert_docs(collection, TACTICAL_DOCUMENTS, label="static tactical")
 
