@@ -30,9 +30,22 @@ TRACKED_TEAMS = [
 ]
 
 
+TRACKED_TEAM_IDS = frozenset(team["team_id"] for team in TRACKED_TEAMS)
+
+
 def team_ids():
     """Return every tracked team_id, for the ingest loop."""
     return [team["team_id"] for team in TRACKED_TEAMS]
+
+
+def is_tracked(team_id: int) -> bool:
+    """True when team_id names a team IGLA holds intel for.
+
+    O(1) membership against a frozenset built once at import, so the
+    request path never rebuilds the list. team_ids() stays as-is: the
+    ingest loop wants an ordered list, the API wants a set.
+    """
+    return team_id in TRACKED_TEAM_IDS
 
 
 if __name__ == "__main__":
