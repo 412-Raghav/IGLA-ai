@@ -15,6 +15,18 @@
     }
     h1 { font-size: 1.4rem; margin-bottom: 4px; }
     p { color: #9aa0a6; }
+    label { display: block; margin: 16px 0 6px; color: #9aa0a6; font-size: 0.9rem; }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 1rem;
+      background: #1a1d23;
+      color: #e6e6e6;
+      border: 1px solid #333;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }
+    select:disabled { opacity: 0.5; }
     textarea {
       width: 100%;
       min-height: 120px;
@@ -52,17 +64,49 @@
   <h1>IGLA — In-Game Leader AI</h1>
   <p>Describe a pre-match scenario. IGLA returns a tactical read.</p>
 
-  <textarea id="situation" placeholder="e.g. We're playing Paper Rex on Ascent. How do they tend to attack B site?"></textarea>
-  <button id="submit">Get tactical read</button>
+  <label for="team">Opponent</label>
+  <select id="team" disabled>
+    <option value="">Loading teams…</option>
+  </select>
+
+  <label for="situation">Scenario</label>
+  <textarea id="situation" placeholder="e.g. How do they tend to attack B site on Ascent?"></textarea>
+
+  <button id="submit" disabled>Get tactical read</button>
 
   <div id="response"></div>
 
   <script>
-    const API_URL = "https://web-production-1eb4e.up.railway.app/ask";
+    const API_BASE = "https://web-production-1eb4e.up.railway.app";
 
     const submitBtn = document.getElementById("submit");
     const situationBox = document.getElementById("situation");
+    const teamSelect = document.getElementById("team");
     const responseBox = document.getElementById("response");
+
+    // The team list has one owner: data/team_registry.py, served via /teams.
+    // Hardcoding options here would be a second copy that silently drifts.
+    async function loadTeams() {
+      try {
+        const res = await fetch(`${API_BASE}/teams`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        teamSelect.innerHTML = "";
+        for (const team of data.teams) {
+          const opt = document.createElement("option");
+          opt.value = team.team_id;
+          opt.textContent = `${team.name} — ${team.region}`;
+          teamSelect.appendChild(opt);
+        }
+
+        teamSelect.disabled = false;
+        submitBtn.disabled = false;
+      } catch (err) {
+        teamSelect.innerHTML = '<option value="">Unavailable</option>';
+        responseBox.textContent = `Could not reach IGLA: ${err.message}`;
+      }
+    }
 
     submitBtn.addEventListener("click", async () => {
       const situation = situationBox.value.trim();
@@ -75,14 +119,23 @@
       responseBox.textContent = "Thinking…";
 
       try {
-        const res = await fetch(API_URL, {
+        const res = await fetch(`${API_BASE}/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ situation: situation }),
+          body: JSON.stringify({
+            situation: situation,
+            // A select's value is always a string. Convert at the boundary
+            // rather than leaning on Pydantic's coercion -- the int/str
+            // mismatch is exactly what failed silently in the 9b filter.
+            team_id: Number(teamSelect.value),
+          }),
         });
 
         if (!res.ok) {
-          responseBox.textContent = `Error ${res.status}: ${res.statusText}`;
+          // A status code summarises; the body says what actually went wrong.
+          const payload = await res.json().catch(() => null);
+          const reason = payload?.detail?.[0]?.msg ?? res.statusText;
+          responseBox.textContent = `Error ${res.status}: ${reason}`;
           return;
         }
 
@@ -94,6 +147,8 @@
         submitBtn.disabled = false;
       }
     });
+
+    loadTeams();
   </script>
 </body>
 </html>
