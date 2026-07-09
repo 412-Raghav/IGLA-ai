@@ -41,7 +41,7 @@ def _team_first_order(metadatas):
 
 
 def retrieve_ranked(
-    query: str, n_results: int = 3, team_id: int | None = None
+    query: str, n_results: int = 3, team_id: int | None = None, collection=None
 ) -> tuple[list[str], list[str], float | None]:
     """Query the collection and apply the team-first re-rank.
 
@@ -50,8 +50,21 @@ def retrieve_ranked(
     before the re-rank. retrieve_context formats the documents for the LLM;
     the eval reads the ids to score rank -- so the eval exercises the exact
     ranking production serves and cannot silently drift from it.
+
+    Args:
+        query: The tactical situation from the user.
+        n_results: How many documents to return (default 3).
+        team_id: If given, scope retrieval to that team's docs plus the
+            universal 'general' shelf, then re-rank team docs first.
+        collection: Injection seam. Defaults to the production collection;
+            experiments pass an alternate so they score through this exact
+            ranking path rather than a forked copy.
+
+    Returns:
+        (ids, documents, best_distance).
     """
-    collection = get_or_create_collection()
+    if collection is None:
+        collection = get_or_create_collection()
 
     # Scoped queries fetch a deeper pool to re-rank from; unscoped (global)
     # queries keep the original behavior byte-for-byte.
