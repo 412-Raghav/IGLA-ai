@@ -2,10 +2,10 @@ import logging
 
 import anthropic
 
-from config import MODEL_NAME, MAX_TOKENS, SCOPE_THRESHOLD
+from config import MODEL_NAME, MAX_TOKENS
 from data.team_registry import is_tracked
 from llm import client
-from rag.retriever import retrieve_context
+from rag.retriever import passes_scope_gate, retrieve_context
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +44,7 @@ def ask_igla(situation: str, team_id: int) -> str:
         return "Could not retrieve tactical intel"
 
     # SCOPE-GATE
-    if best_distance is None or best_distance > SCOPE_THRESHOLD:
+    if not passes_scope_gate(best_distance):
         logger.info(
             "Query rejected by scope-gate (team_id=%s, best_distance=%s)",
             team_id,

@@ -1,3 +1,4 @@
+from config import SCOPE_THRESHOLD
 from rag.embedder import get_or_create_collection
 
 
@@ -7,6 +8,20 @@ from rag.embedder import get_or_create_collection
 # largest per-team pool (~12 for Paper Rex) so the re-rank sees the full
 # scoped set, not a truncated view. Tunable; raise if pools grow.
 _RERANK_POOL = 20
+
+
+def passes_scope_gate(
+    best_distance: float | None, threshold: float = SCOPE_THRESHOLD
+) -> bool:
+    """The scope-gate decision, defined once for serving and for eval.
+
+    Production rejects when retrieval returned nothing, or when the closest
+    document sits farther than `threshold`. Both callers import this, so an
+    eval cannot silently score a different rule than the one that serves.
+    """
+    if best_distance is None:
+        return False
+    return best_distance <= threshold
 
 
 def _build_where(team_id):

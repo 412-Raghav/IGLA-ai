@@ -9,9 +9,12 @@ Run from the project root:
     python -m evals.run_eval
 """
 
+import argparse
+
+from config import SCOPE_THRESHOLD
 from evals.golden_queries import GOLDEN_QUERIES
 from rag.embedder import get_or_create_collection
-from rag.retriever import retrieve_ranked
+from rag.retriever import passes_scope_gate, retrieve_ranked
 
 # @1 = "was it the TOP result?" (strictest, single-best-answer).
 # @3 = "was it in the top 3?" (what the writer actually sees as context).
@@ -26,9 +29,10 @@ def rank_of(expected_id, returned_ids):
     return None
 
 
-def main():
+def main(threshold=SCOPE_THRESHOLD):
     collection = get_or_create_collection()
-    print(f"Collection holds {collection.count()} docs.\n")
+    print(f"Collection holds {collection.count()} docs.")
+    print(f"Scope-gate threshold: {threshold}\n")
 
     scored = []
     skipped = []
@@ -46,25 +50,33 @@ def main():
         )
 
         rank = rank_of(expected_id, returned_ids)
-        scored.append((query, expected_id, rank, top_distance))
+        gate = "PASS" if passes_scope_gate(top_distance, threshold) else "REJECT"
+        scored.append((query, expected_id, rank, top_distance, gate))
 
     print("PER-QUERY RESULTS")
     print("-" * 60)
-    for query, expected_id, rank, top_distance in scored:
+    for query, expected_id, rank, top_distance, gate in scored:
         verdict = f"rank {rank}" if rank is not None else "MISS"
         dist = f"{top_distance:.3f}" if top_distance is not None else "n/a"
-        print(f'  {verdict:<8} dist={dist}  "{query}" -> {expected_id}')
+        print(f'  {verdict:<8} {gate:<6} dist={dist}  "{query}" -> {expected_id}')
 
     print("\nHIT-RATE SUMMARY")
     print("-" * 60)
     n = len(scored)
     for k in K_VALUES:
         hits = sum(
-            1 for _, _, rank, _ in scored
+            1 for _, _, rank, _, _ in scored
             if rank is not None and rank <= k
         )
+        served = sum(
+            1 for _, _, rank, _, gate in scored
+            if rank is not None and rank <= k and gate == "PASS"
+        )
         rate = (hits / n * 100) if n else 0.0
+        served_rate = (served / n * 100) if n else 0.0
         print(f"  hit-rate@{k}: {hits}/{n} = {rate:.0f}%")
+        print(f"  served@{k}:   {served}/{n} = {served_rate:.0f}%"
+              "   (rank@k AND scope-gate PASS)")
 
     if skipped:
         print(f"\nSkipped {len(skipped)} unset queries (None):")
@@ -73,4 +85,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="IGLA retrieval eval.")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=SCOPE_THRESHOLD,
+        help="Scope-gate threshold to score against (default: config value).",
+    )
+    args = parser.parse_args()
+    main(threshold=args.threshold)
