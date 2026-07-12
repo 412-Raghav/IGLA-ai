@@ -85,7 +85,11 @@ def ask_endpoint(request: Request, situation_request: SituationRequest):
     return {"response": response}
 
 
-@app.post("/refresh", status_code=202)
+@app.post(
+    "/refresh",
+    status_code=202,
+    responses={401: {"description": "Missing or invalid refresh token"}},
+)
 def refresh_endpoint(x_refresh_token: str | None = Header(None)):
     if (
         not REFRESH_TOKEN
