@@ -12,7 +12,12 @@ from slowapi.util import get_remote_address
 
 from config import REFRESH_TOKEN
 from data.team_registry import TRACKED_TEAMS, is_tracked
-from ingest import has_live_data, ingest_static_docs, refresh_live_data
+from ingest import (
+    has_live_data,
+    ingest_generated_docs,
+    ingest_static_docs,
+    refresh_live_data,
+)
 from main import ask_igla
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +32,7 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ingest_static_docs()
+    ingest_generated_docs()
 
     if not has_live_data():
         logger.info("No live data on startup; running an immediate refresh.")
