@@ -1,5 +1,6 @@
 import logging
 import secrets
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ from ingest import (
 )
 from main import ask_igla
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("igla")
 
 # Rate limiter keyed on client IP. In-memory store: counts reset on restart
