@@ -10,10 +10,6 @@ from rag.embedder import get_or_create_collection
 logger = logging.getLogger("igla")
 GENERATED_DOCS_DIR = Path(__file__).parent / "data" / "generated"
 
-# Teams to pull live tendencies for. Look up new IDs via vlr.search,
-# never guess them. 624 = Paper Rex (verified).
-TEAMS = [624]
-
 
 def _upsert_docs(collection, docs, label):
     """Upsert a batch of {id, text, metadata} docs. Idempotent by id."""
