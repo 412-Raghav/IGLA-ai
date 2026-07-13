@@ -32,3 +32,16 @@ SessionLocal = sessionmaker(bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+
+def get_db():
+    """Yield a request-scoped DB session, guaranteed to close.
+
+    FastAPI dependency: the session is created per request, handed to the
+    endpoint, and closed in the finally even if the handler raises.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

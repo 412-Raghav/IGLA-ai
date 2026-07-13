@@ -20,6 +20,7 @@ from ingest import (
     refresh_live_data,
 )
 from main import ask_igla
+from auth_routes import router as auth_router
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("igla")
@@ -46,11 +47,14 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(auth_router)
 
 
 # Wire the limiter into the app and register the 429 handler.
