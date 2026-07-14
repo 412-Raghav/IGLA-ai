@@ -16,7 +16,7 @@
     h1 { font-size: 1.4rem; margin-bottom: 4px; }
     p { color: #9aa0a6; }
     label { display: block; margin: 16px 0 6px; color: #9aa0a6; font-size: 0.9rem; }
-    select {
+    select, input[type="text"], input[type="password"] {
       width: 100%;
       padding: 10px 12px;
       font-size: 1rem;
@@ -49,6 +49,13 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #2a2d35; }
+    button.small { margin-top: 0; padding: 6px 14px; font-size: 0.9rem; }
+    .auth-actions { display: flex; gap: 8px; }
+    .auth-actions button { flex: 1; }
+    .app-header { display: flex; justify-content: space-between; align-items: center; }
+    .app-header h1 { margin-bottom: 0; }
+    #auth-msg { margin-top: 12px; min-height: 20px; color: #e0777c; font-size: 0.9rem; }
     #response {
       margin-top: 24px;
       padding: 16px;
@@ -61,28 +68,172 @@
   </style>
 </head>
 <body>
-  <h1>IGLA — In-Game Leader AI</h1>
-  <p>Describe a pre-match scenario. IGLA returns a tactical read.</p>
+  <!-- Panel 1 — login. Shown when /auth/me reports we are not authenticated. -->
+  <div id="login-panel">
+    <h1>IGLA — In-Game Leader AI</h1>
+    <p>Sign in, or create an account, to get tactical reads.</p>
 
-  <label for="team">Opponent</label>
-  <select id="team" disabled>
-    <option value="">Loading teams…</option>
-  </select>
+    <label for="username">Username</label>
+    <input id="username" type="text" autocomplete="username" />
 
-  <label for="situation">Scenario</label>
-  <textarea id="situation" placeholder="e.g. How do they tend to attack B site on Ascent?"></textarea>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" />
 
-  <button id="submit" disabled>Get tactical read</button>
+    <div class="auth-actions">
+      <button id="login-btn">Log in</button>
+      <button id="register-btn" class="secondary">Create account</button>
+    </div>
 
-  <div id="response"></div>
+    <div id="auth-msg"></div>
+  </div>
+
+  <!-- Panel 2 — the app. Hidden until authenticated; the same content as
+       before, now behind the gate, with a logout control and a signed-in-as. -->
+  <div id="app-panel" style="display: none;">
+    <div class="app-header">
+      <h1>IGLA — In-Game Leader AI</h1>
+      <button id="logout-btn" class="secondary small">Log out</button>
+    </div>
+    <p>Signed in as <span id="whoami"></span>. Describe a pre-match scenario.</p>
+
+    <label for="team">Opponent</label>
+    <select id="team" disabled>
+      <option value="">Loading teams…</option>
+    </select>
+
+    <label for="situation">Scenario</label>
+    <textarea id="situation" placeholder="e.g. How do they tend to attack B site on Ascent?"></textarea>
+
+    <button id="submit" disabled>Get tactical read</button>
+
+    <div id="response"></div>
+  </div>
 
   <script>
-    const API_BASE = "https://web-production-1eb4e.up.railway.app";
+    const API_BASE = "";
+
+    const loginPanel = document.getElementById("login-panel");
+    const appPanel = document.getElementById("app-panel");
+    const authMsg = document.getElementById("auth-msg");
+    const whoami = document.getElementById("whoami");
+
+    const usernameBox = document.getElementById("username");
+    const passwordBox = document.getElementById("password");
+    const loginBtn = document.getElementById("login-btn");
+    const registerBtn = document.getElementById("register-btn");
+    const logoutBtn = document.getElementById("logout-btn");
 
     const submitBtn = document.getElementById("submit");
     const situationBox = document.getElementById("situation");
     const teamSelect = document.getElementById("team");
     const responseBox = document.getElementById("response");
+
+    // FastAPI validation errors put `detail` as an array of {loc, msg, ...};
+    // a raised HTTPException puts `detail` as a plain string. Handle both so a
+    // 422 (e.g. password too long) and a 401/409 each surface a real reason.
+    function errorText(payload, status) {
+      const detail = payload?.detail;
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) return detail[0]?.msg ?? `Error ${status}`;
+      return `Error ${status}`;
+    }
+
+    function showApp(username) {
+      loginPanel.style.display = "none";
+      appPanel.style.display = "block";
+      whoami.textContent = username;
+      loadTeams();
+    }
+
+    function showLogin() {
+      appPanel.style.display = "none";
+      loginPanel.style.display = "block";
+    }
+
+    // On load, ask the server who we are. Same-origin means the session
+    // cookie rides along automatically -- no `credentials` option needed.
+    // 200 -> we're in; anything else -> show the login panel.
+    async function checkAuth() {
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`);
+        if (res.ok) {
+          const data = await res.json();
+          showApp(data.username);
+        } else {
+          showLogin();
+        }
+      } catch (err) {
+        showLogin();
+      }
+    }
+
+    // One code path for logging in, shared by the Log in button and the
+    // auto-login that follows a successful registration.
+    async function doLogin(username, password) {
+      authMsg.textContent = "";
+      try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          showApp(data.username);
+          return;
+        }
+        const payload = await res.json().catch(() => null);
+        authMsg.textContent = errorText(payload, res.status);
+      } catch (err) {
+        authMsg.textContent = `Request failed: ${err.message}`;
+      }
+    }
+
+    loginBtn.addEventListener("click", () => {
+      const username = usernameBox.value.trim();
+      const password = passwordBox.value;
+      if (!username || !password) {
+        authMsg.textContent = "Enter a username and password.";
+        return;
+      }
+      doLogin(username, password);
+    });
+
+    // Register, then log straight in on success -- so a new user lands in the
+    // app instead of being bounced back to a login form they just filled in.
+    registerBtn.addEventListener("click", async () => {
+      const username = usernameBox.value.trim();
+      const password = passwordBox.value;
+      if (!username || !password) {
+        authMsg.textContent = "Enter a username and password.";
+        return;
+      }
+      authMsg.textContent = "";
+      try {
+        const res = await fetch(`${API_BASE}/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        if (res.ok) {
+          doLogin(username, password);
+          return;
+        }
+        const payload = await res.json().catch(() => null);
+        authMsg.textContent = errorText(payload, res.status);
+      } catch (err) {
+        authMsg.textContent = `Request failed: ${err.message}`;
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await fetch(`${API_BASE}/auth/logout`, { method: "POST" });
+      } catch (err) {
+        // Even if the network call fails, drop to the login screen locally.
+      }
+      showLogin();
+    });
 
     // The team list has one owner: data/team_registry.py, served via /teams.
     // Hardcoding options here would be a second copy that silently drifts.
@@ -131,6 +282,13 @@
           }),
         });
 
+        if (res.status === 401) {
+          // Session expired or missing -- drop to the login panel rather than
+          // showing an error for a scenario the user can no longer submit.
+          showLogin();
+          return;
+        }
+
         if (!res.ok) {
           // A status code summarises; the body says what actually went wrong.
           const payload = await res.json().catch(() => null);
@@ -148,7 +306,8 @@
       }
     });
 
-    loadTeams();
+    // Decide which panel to show before anything else runs.
+    checkAuth();
   </script>
 </body>
 </html>

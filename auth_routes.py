@@ -130,3 +130,14 @@ def require_user(
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
     return user
+
+
+@router.get("/me")
+def me(user: User = Depends(require_user)):
+    """Current user, or 401. The frontend calls this on page load to decide
+    which panel to show: 200 -> app panel, 401 -> login panel.
+
+    Defined after require_user because Depends(require_user) is evaluated when
+    this function is defined -- the name must already be bound.
+    """
+    return {"id": user.id, "username": user.username}

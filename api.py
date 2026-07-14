@@ -3,9 +3,11 @@ import secrets
 import sys
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path 
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse 
 from pydantic import BaseModel, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -20,7 +22,8 @@ from ingest import (
     refresh_live_data,
 )
 from main import ask_igla
-from auth_routes import router as auth_router
+from auth_routes import require_user, router as auth_router
+from models import User
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("igla")
@@ -82,9 +85,13 @@ class SituationRequest(BaseModel):
         return value
 
 
-@app.post("/ask")
+@app.post("/ask", responses={401: {"description": "Not authenticated"}})
 @limiter.limit("10/minute")
-def ask_endpoint(request: Request, situation_request: SituationRequest):
+def ask_endpoint(
+    request: Request,
+    situation_request: SituationRequest,
+    user: User = Depends(require_user),
+):
     response = ask_igla(situation_request.situation, situation_request.team_id)
     return {"response": response}
 
@@ -105,6 +112,21 @@ def refresh_endpoint(x_refresh_token: str | None = Header(None)):
     logger.info("Authorized refresh triggered; starting in background.")
     threading.Thread(target=refresh_live_data, daemon=True).start()
     return {"status": "refresh started"}
+
+
+INDEX_HTML = Path(__file__).parent / "index.html"
+
+
+@app.get("/")
+def serve_index():
+    """Serve the single-page frontend, same-origin with the API.
+
+    Serving from FastAPI (not opening from disk) puts the page and /ask on
+    one origin -- which is what lets the session cookie attach in the auth
+    steps to come. Path is anchored to this file's location, not the process
+    CWD, so it resolves no matter where uvicorn is launched from.
+    """
+    return FileResponse(INDEX_HTML)
 
 
 @app.get("/teams")
