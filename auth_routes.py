@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session as DbSession
 from db import get_db
 from models import User
 from security import MAX_PASSWORD_BYTES, hash_password, verify_password
-from session_service import create_session, delete_session
+from session_service import create_session, delete_session, validate_session
 
 logger = logging.getLogger("igla")
 
@@ -109,3 +109,24 @@ def logout(
         delete_session(igla_session, db)
     response.delete_cookie(key=SESSION_COOKIE)
     return {"status": "logged out"}
+
+
+def require_user(
+    igla_session: str | None = Cookie(default=None),
+    db: DbSession = Depends(get_db),
+) -> User:
+    """Dependency: return the current user or raise 401.
+
+    Reads the session cookie, validates it (exists AND unexpired) via
+    validate_session, and returns the User. Any missing/invalid/expired
+    session is a clean 401. Protect a route by adding:
+        user: User = Depends(require_user)
+    """
+    if igla_session is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user = validate_session(igla_session, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    return user
