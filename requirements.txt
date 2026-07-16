@@ -6,7 +6,8 @@ python-dotenv==1.2.2
 vlrdevapi==1.6.2
 slowapi==0.1.10
 httpx==0.28.1
-sqlalchemy
-alembic
-psycopg[binary]
-bcrypt
+sqlalchemy==2.0.51
+alembic==1.18.5
+psycopg[binary]==3.3.4
+bcrypt==5.0.0
+pytest==9.1.1
