@@ -23,6 +23,7 @@ from ingest import (
 )
 from main import ask_igla
 from auth_routes import require_user, router as auth_router
+from chat_routes import router as chat_router
 from models import User
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -58,6 +59,7 @@ app.add_middleware(
 
 
 app.include_router(auth_router)
+app.include_router(chat_router)
 
 
 # Wire the limiter into the app and register the 429 handler.
