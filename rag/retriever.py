@@ -8,6 +8,7 @@ from rag.embedder import get_or_create_collection
 # largest per-team pool (~12 for Paper Rex) so the re-rank sees the full
 # scoped set, not a truncated view. Tunable; raise if pools grow.
 _RERANK_POOL = 20
+NO_CONTEXT = "No relevant tactical context found"
 
 
 def passes_scope_gate(
@@ -111,6 +112,21 @@ def retrieve_ranked(
     return ids[:n_results], documents[:n_results], best_distance
 
 
+def format_context(documents: list[str]) -> str:
+    """Format retrieved documents into the block the LLM prompt carries.
+
+    Extracted so the serving path can call retrieve_ranked directly -- it needs
+    the ids for the per-turn retrieval record, which retrieve_context discards
+    -- and still format identically. One formatter, two callers; a second copy
+    would drift the first time either side was edited.
+    """
+    if not documents:
+        return NO_CONTEXT
+    return "\n\n".join(
+        f"[Tactical Intel {i + 1}]:\n{doc}" for i, doc in enumerate(documents)
+    )
+
+
 def retrieve_context(
     query: str, n_results: int = 3, team_id: int | None = None
 ) -> tuple[str, float | None]:
@@ -133,10 +149,4 @@ def retrieve_context(
     _, documents, best_distance = retrieve_ranked(
         query, n_results=n_results, team_id=team_id
     )
-    if not documents:
-        return "No relevant tactical context found", None
-
-    context_parts = []
-    for i, doc in enumerate(documents):
-        context_parts.append(f"[Tactical Intel {i + 1}]:\n{doc}")
-    return "\n\n".join(context_parts), best_distance
+    return format_context(documents), best_distance

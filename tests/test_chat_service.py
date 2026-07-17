@@ -86,6 +86,38 @@ def test_get_history_returns_anthropic_message_format(db, user):
     ]
 
 
+def test_get_history_excludes_dangling_user_turn(db, user):
+    """A gate-passing user turn with no assistant reply is what a 502 leaves
+    behind. Replaying it would put two consecutive user messages in the
+    Anthropic array.
+    """
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(conv.id, "user", "q1", db, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a1", db)
+    chat_service.add_message(conv.id, "user", "q2-claude-died", db, retrieval=PASS)
+    chat_service.add_message(conv.id, "user", "q3", db, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a3", db)
+
+    history = chat_service.get_history(conv.id, db)
+
+    assert [m["content"] for m in history] == ["q1", "a1", "q3", "a3"]
+    # all five rows persist -- the dangling turn is recorded, just not replayed
+    assert db.query(Message).filter_by(conversation_id=conv.id).count() == 5
+
+
+def test_get_history_excludes_trailing_dangling_user_turn(db, user):
+    """The production shape: Claude dies on the newest turn, then the user
+    asks again. get_history runs BEFORE the new turn is written, so the failed
+    turn is the last row in the thread when history is assembled.
+    """
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(conv.id, "user", "q1", db, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a1", db)
+    chat_service.add_message(conv.id, "user", "q2-claude-died", db, retrieval=PASS)
+
+    assert [m["content"] for m in chat_service.get_history(conv.id, db)] == ["q1", "a1"]
+
+
 def test_delete_conversation_cascades_messages(db, user):
     conv = chat_service.create_conversation(user.id, 624, db)
     chat_service.add_message(conv.id, "user", "q", db, retrieval=PASS)
