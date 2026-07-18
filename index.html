@@ -7,7 +7,7 @@
   <style>
     body {
       font-family: system-ui, sans-serif;
-      max-width: 720px;
+      max-width: 1040px;
       margin: 40px auto;
       padding: 0 16px;
       background: #0f1115;
@@ -29,7 +29,7 @@
     select:disabled { opacity: 0.5; }
     textarea {
       width: 100%;
-      min-height: 120px;
+      min-height: 72px;
       padding: 12px;
       font-size: 1rem;
       background: #1a1d23;
@@ -37,6 +37,7 @@
       border: 1px solid #333;
       border-radius: 8px;
       box-sizing: border-box;
+      resize: vertical;
     }
     button {
       margin-top: 12px;
@@ -51,24 +52,69 @@
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     button.secondary { background: #2a2d35; }
     button.small { margin-top: 0; padding: 6px 14px; font-size: 0.9rem; }
+    button.full { width: 100%; }
     .auth-actions { display: flex; gap: 8px; }
     .auth-actions button { flex: 1; }
-    .app-header { display: flex; justify-content: space-between; align-items: center; }
-    .app-header h1 { margin-bottom: 0; }
     #auth-msg { margin-top: 12px; min-height: 20px; color: #e0777c; font-size: 0.9rem; }
-    #response {
-      margin-top: 24px;
-      padding: 16px;
-      background: #1a1d23;
-      border: 1px solid #333;
-      border-radius: 8px;
-      white-space: pre-wrap;
-      min-height: 40px;
+
+    /* Two columns: threads on the left, the open thread on the right. */
+    #app-panel { display: flex; gap: 20px; align-items: flex-start; }
+    #sidebar { width: 210px; flex-shrink: 0; }
+    #main { flex: 1; min-width: 0; }
+
+    .sidebar-head { display: flex; justify-content: space-between; align-items: center; }
+    .sidebar-head strong { font-size: 1.1rem; }
+    .whoami-line { color: #9aa0a6; font-size: 0.8rem; margin: 6px 0 12px; }
+    .sidebar-label { color: #666; font-size: 0.75rem; margin: 18px 0 6px; text-transform: uppercase; }
+
+    .thread-item {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
     }
+    .thread-item:hover { background: #16191f; }
+    .thread-item.active { background: #1a1d23; border-color: #333; }
+    .thread-title { font-size: 0.85rem; }
+    .thread-meta { font-size: 0.75rem; color: #666; margin-top: 2px; }
+
+    #thread-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #2a2d35;
+      padding-bottom: 10px;
+      margin-bottom: 16px;
+    }
+    .badge {
+      background: #2a2d35;
+      color: #9aa0a6;
+      font-size: 0.75rem;
+      padding: 3px 10px;
+      border-radius: 6px;
+    }
+
+    #messages { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+    .bubble {
+      max-width: 82%;
+      padding: 10px 14px;
+      border-radius: 10px;
+      white-space: pre-wrap;
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+    .bubble.user { align-self: flex-end; background: #2a2d35; }
+    .bubble.assistant { align-self: flex-start; background: #1a1d23; border: 1px solid #333; }
+    /* A gate-rejected exchange is styled as what it is: a refusal, not an
+       answer. Session 1 ships this failure on purpose -- Session 2 removes it. */
+    .bubble.rejected { background: #2c1a1c; border-color: #5a2a2e; color: #e0777c; }
+    .composer-row { display: flex; gap: 8px; align-items: flex-start; }
+    .composer-row button { margin-top: 0; }
+    #empty-state { color: #666; padding: 40px 0; text-align: center; }
   </style>
 </head>
 <body>
-  <!-- Panel 1 — login. Shown when /auth/me reports we are not authenticated. -->
+  <!-- State 1 — login. Shown when /auth/me reports we are not authenticated. -->
   <div id="login-panel">
     <h1>IGLA — In-Game Leader AI</h1>
     <p>Sign in, or create an account, to get tactical reads.</p>
@@ -87,26 +133,52 @@
     <div id="auth-msg"></div>
   </div>
 
-  <!-- Panel 2 — the app. Hidden until authenticated; the same content as
-       before, now behind the gate, with a logout control and a signed-in-as. -->
+  <!-- States 2 and 3 both live here: sidebar always, thread-view only when a
+       thread is open. The team dropdown moved out of the main screen -- it is
+       now part of creating a thread, because team_id is the thread's anchor
+       and is asked once, at birth. -->
   <div id="app-panel" style="display: none;">
-    <div class="app-header">
-      <h1>IGLA — In-Game Leader AI</h1>
-      <button id="logout-btn" class="secondary small">Log out</button>
-    </div>
-    <p>Signed in as <span id="whoami"></span>. Describe a pre-match scenario.</p>
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <strong>IGLA</strong>
+        <button id="logout-btn" class="secondary small">Log out</button>
+      </div>
+      <div class="whoami-line">Signed in as <span id="whoami"></span></div>
 
-    <label for="team">Opponent</label>
-    <select id="team" disabled>
-      <option value="">Loading teams…</option>
-    </select>
+      <button id="new-thread-btn" class="full">+ New thread</button>
 
-    <label for="situation">Scenario</label>
-    <textarea id="situation" placeholder="e.g. How do they tend to attack B site on Ascent?"></textarea>
+      <div id="new-thread-form" style="display: none;">
+        <label for="team">Opponent</label>
+        <select id="team" disabled>
+          <option value="">Loading teams…</option>
+        </select>
+        <div class="auth-actions">
+          <button id="create-thread-btn" class="small">Create</button>
+          <button id="cancel-thread-btn" class="secondary small">Cancel</button>
+        </div>
+      </div>
 
-    <button id="submit" disabled>Get tactical read</button>
+      <div class="sidebar-label">Recent</div>
+      <div id="thread-list"></div>
+    </aside>
 
-    <div id="response"></div>
+    <main id="main">
+      <div id="empty-state">
+        <p>Pick a thread, or start a new one.</p>
+      </div>
+
+      <div id="thread-view" style="display: none;">
+        <div id="thread-header">
+          <span id="thread-title"></span>
+          <span id="thread-team" class="badge"></span>
+        </div>
+        <div id="messages"></div>
+        <div class="composer-row">
+          <textarea id="message-box" placeholder="Ask a follow-up… (Enter to send)"></textarea>
+          <button id="send-btn">Send</button>
+        </div>
+      </div>
+    </main>
   </div>
 
   <script>
@@ -123,14 +195,30 @@
     const registerBtn = document.getElementById("register-btn");
     const logoutBtn = document.getElementById("logout-btn");
 
-    const submitBtn = document.getElementById("submit");
-    const situationBox = document.getElementById("situation");
+    const newThreadBtn = document.getElementById("new-thread-btn");
+    const newThreadForm = document.getElementById("new-thread-form");
+    const createThreadBtn = document.getElementById("create-thread-btn");
+    const cancelThreadBtn = document.getElementById("cancel-thread-btn");
     const teamSelect = document.getElementById("team");
-    const responseBox = document.getElementById("response");
+    const threadList = document.getElementById("thread-list");
+
+    const emptyState = document.getElementById("empty-state");
+    const threadView = document.getElementById("thread-view");
+    const threadTitle = document.getElementById("thread-title");
+    const threadTeam = document.getElementById("thread-team");
+    const messagesBox = document.getElementById("messages");
+    const messageBox = document.getElementById("message-box");
+    const sendBtn = document.getElementById("send-btn");
+
+    // The one piece of client state: which thread is open. null = none.
+    let currentConversationId = null;
+    // team_id -> display name, built from /teams so the badge can label a
+    // thread without a second lookup. The registry stays the only source.
+    const teamNames = {};
 
     // FastAPI validation errors put `detail` as an array of {loc, msg, ...};
     // a raised HTTPException puts `detail` as a plain string. Handle both so a
-    // 422 (e.g. password too long) and a 401/409 each surface a real reason.
+    // 422 and a 401/404/409 each surface a real reason.
     function errorText(payload, status) {
       const detail = payload?.detail;
       if (typeof detail === "string") return detail;
@@ -138,21 +226,50 @@
       return `Error ${status}`;
     }
 
+    function relativeTime(iso) {
+      const mins = Math.floor((Date.now() - new Date(iso)) / 60000);
+      if (mins < 1) return "just now";
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    // Every authenticated call routes through here so a dead session drops to
+    // the login panel from ONE place. Returns null when that happened.
+    async function authedFetch(path, options) {
+      const res = await fetch(`${API_BASE}${path}`, options);
+      if (res.status === 401) {
+        showLogin();
+        return null;
+      }
+      return res;
+    }
+
     function showApp(username) {
       loginPanel.style.display = "none";
-      appPanel.style.display = "block";
+      // flex, not block -- #app-panel is the two-column layout.
+      appPanel.style.display = "flex";
       whoami.textContent = username;
       loadTeams();
+      loadThreads();
+      showEmpty();
     }
 
     function showLogin() {
       appPanel.style.display = "none";
       loginPanel.style.display = "block";
+      currentConversationId = null;
     }
 
-    // On load, ask the server who we are. Same-origin means the session
-    // cookie rides along automatically -- no `credentials` option needed.
-    // 200 -> we're in; anything else -> show the login panel.
+    function showEmpty() {
+      threadView.style.display = "none";
+      emptyState.style.display = "block";
+      currentConversationId = null;
+    }
+
+    // On load, ask the server who we are. Same-origin means the session cookie
+    // rides along automatically -- no `credentials` option needed anywhere.
     async function checkAuth() {
       try {
         const res = await fetch(`${API_BASE}/auth/me`);
@@ -200,7 +317,7 @@
     });
 
     // Register, then log straight in on success -- so a new user lands in the
-    // app instead of being bounced back to a login form they just filled in.
+    // app instead of being bounced back to a form they just filled in.
     registerBtn.addEventListener("click", async () => {
       const username = usernameBox.value.trim();
       const password = passwordBox.value;
@@ -245,64 +362,179 @@
         const data = await res.json();
         teamSelect.innerHTML = "";
         for (const team of data.teams) {
+          teamNames[team.team_id] = team.name;
           const opt = document.createElement("option");
           opt.value = team.team_id;
           opt.textContent = `${team.name} — ${team.region}`;
           teamSelect.appendChild(opt);
         }
-
         teamSelect.disabled = false;
-        submitBtn.disabled = false;
       } catch (err) {
         teamSelect.innerHTML = '<option value="">Unavailable</option>';
-        responseBox.textContent = `Could not reach IGLA: ${err.message}`;
       }
     }
 
-    submitBtn.addEventListener("click", async () => {
-      const situation = situationBox.value.trim();
-      if (!situation) {
-        responseBox.textContent = "Type a scenario first.";
+    async function loadThreads() {
+      const res = await authedFetch("/conversations");
+      if (!res || !res.ok) return;
+
+      const data = await res.json();
+      threadList.innerHTML = "";
+      for (const conv of data.conversations) {
+        const item = document.createElement("div");
+        item.className = "thread-item";
+        if (conv.id === currentConversationId) item.classList.add("active");
+
+        const title = document.createElement("div");
+        title.className = "thread-title";
+        // Null until the first turn lands -- set_title_if_absent names the
+        // thread from its first question, so a fresh thread has no title yet.
+        title.textContent = conv.title ?? "New thread";
+
+        const meta = document.createElement("div");
+        meta.className = "thread-meta";
+        const name = teamNames[conv.team_id] ?? conv.team_id;
+        meta.textContent = `${name} · ${relativeTime(conv.updated_at)}`;
+
+        item.append(title, meta);
+        item.addEventListener("click", () => openThread(conv.id));
+        threadList.appendChild(item);
+      }
+    }
+
+    // textContent, never innerHTML: message bodies come from the user and from
+    // Claude, and neither is trusted markup.
+    function appendBubble(role, content, rejected) {
+      const bubble = document.createElement("div");
+      bubble.className = `bubble ${role}`;
+      if (rejected) bubble.classList.add("rejected");
+      bubble.textContent = content;
+      messagesBox.appendChild(bubble);
+      return bubble;
+    }
+
+    function renderMessages(messages) {
+      messagesBox.innerHTML = "";
+      // The gate verdict lives on the USER row -- it describes how the QUESTION
+      // was processed. So an assistant bubble is a refusal when the user turn
+      // before it was rejected. Track it as we walk.
+      let lastUserGate = null;
+      for (const m of messages) {
+        if (m.role === "user") lastUserGate = m.gate;
+        const rejected = m.role === "assistant" && lastUserGate === "reject";
+        appendBubble(m.role, m.content, rejected);
+      }
+    }
+
+    async function openThread(id) {
+      const res = await authedFetch(`/conversations/${id}`);
+      if (!res) return;
+      if (!res.ok) {
+        // 404: deleted, or never ours. Fall back rather than show a dead view.
+        showEmpty();
+        loadThreads();
         return;
       }
 
-      submitBtn.disabled = true;
-      responseBox.textContent = "Thinking…";
+      const conv = await res.json();
+      currentConversationId = conv.id;
+      threadTitle.textContent = conv.title ?? "New thread";
+      threadTeam.textContent = teamNames[conv.team_id] ?? conv.team_id;
+      renderMessages(conv.messages);
+
+      emptyState.style.display = "none";
+      threadView.style.display = "block";
+      newThreadForm.style.display = "none";
+      loadThreads();
+      messageBox.focus();
+    }
+
+    newThreadBtn.addEventListener("click", () => {
+      newThreadForm.style.display =
+        newThreadForm.style.display === "none" ? "block" : "none";
+    });
+
+    cancelThreadBtn.addEventListener("click", () => {
+      newThreadForm.style.display = "none";
+    });
+
+    createThreadBtn.addEventListener("click", async () => {
+      const teamId = Number(teamSelect.value);
+      if (!teamId) return;
+
+      createThreadBtn.disabled = true;
+      try {
+        const res = await authedFetch("/conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // A select's value is always a string. Convert at the boundary
+          // rather than leaning on Pydantic's coercion -- the int/str
+          // mismatch is exactly what failed silently in the 9b filter.
+          body: JSON.stringify({ team_id: teamId }),
+        });
+        if (!res) return;
+        if (!res.ok) {
+          const payload = await res.json().catch(() => null);
+          alert(errorText(payload, res.status));
+          return;
+        }
+        const conv = await res.json();
+        newThreadForm.style.display = "none";
+        await openThread(conv.id);
+      } finally {
+        createThreadBtn.disabled = false;
+      }
+    });
+
+    async function sendMessage() {
+      const message = messageBox.value.trim();
+      if (!message || !currentConversationId) return;
+
+      appendBubble("user", message, false);
+      messageBox.value = "";
+      sendBtn.disabled = true;
+      const pending = appendBubble("assistant", "Thinking…", false);
 
       try {
-        const res = await fetch(`${API_BASE}/ask`, {
+        const res = await authedFetch("/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            situation: situation,
-            // A select's value is always a string. Convert at the boundary
-            // rather than leaning on Pydantic's coercion -- the int/str
-            // mismatch is exactly what failed silently in the 9b filter.
-            team_id: Number(teamSelect.value),
+            conversation_id: currentConversationId,
+            message: message,
           }),
         });
-
-        if (res.status === 401) {
-          // Session expired or missing -- drop to the login panel rather than
-          // showing an error for a scenario the user can no longer submit.
-          showLogin();
-          return;
-        }
+        if (!res) return;
 
         if (!res.ok) {
-          // A status code summarises; the body says what actually went wrong.
           const payload = await res.json().catch(() => null);
-          const reason = payload?.detail?.[0]?.msg ?? res.statusText;
-          responseBox.textContent = `Error ${res.status}: ${reason}`;
+          pending.textContent = `Error ${res.status}: ${errorText(payload, res.status)}`;
+          pending.classList.add("rejected");
           return;
         }
 
         const data = await res.json();
-        responseBox.textContent = data.response ?? JSON.stringify(data, null, 2);
+        pending.textContent = data.response;
+        // /ask returns the gate verdict, so a rejection styles itself without
+        // re-fetching the thread.
+        if (data.gate === "reject") pending.classList.add("rejected");
+        // The first turn sets the thread's title server-side; refresh the
+        // sidebar so it stops saying "New thread".
+        loadThreads();
       } catch (err) {
-        responseBox.textContent = `Request failed: ${err.message}`;
+        pending.textContent = `Request failed: ${err.message}`;
+        pending.classList.add("rejected");
       } finally {
-        submitBtn.disabled = false;
+        sendBtn.disabled = false;
+        messageBox.focus();
+      }
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    messageBox.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
       }
     });
 
