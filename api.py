@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session as DbSession
 import chat_service
 from auth_routes import require_user, router as auth_router
 from chat_routes import router as chat_router
-from config import REFRESH_TOKEN
-from data.team_registry import TRACKED_TEAMS
+from config import REFRESH_TOKEN, SCOPE_THRESHOLD
+from data.team_registry import TRACKED_TEAMS, team_name
 from db import get_db
 from ingest import (
     has_live_data,
@@ -131,34 +131,71 @@ def ask_endpoint(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Session 1: no entity extraction, so scope is the thread anchor alone.
-    # Session 2 adds names/maps pulled from the message; the column already
-    # holds the right shape, so that lands without a migration.
+    # Scope stays the thread anchor alone this step. Message-team extraction
+    # (naming a different team mid-thread) changes the where-filter and has no
+    # measurement behind it yet, so it's a separate step. Column shape is
+    # unchanged either way -- no migration when it lands.
     entity_scope = {"team_ids": [conversation.team_id]}
+    anchor_name = team_name(conversation.team_id)
 
+    # Both retrieval attempts share one error boundary: a Chroma failure on
+    # either maps to 503, and only retrieve_ranked can throw inside it (the
+    # gate check and record-building can't). anchor_name is resolved above,
+    # OUTSIDE the boundary, so an unknown-team bug surfaces as 500 -- not a
+    # masked 503 that would blame the vector store for a registry mismatch.
     try:
+        # Attempt 1: the message as typed.
         doc_ids, documents, best_distance = retrieve_ranked(
             ask_request.message, team_id=conversation.team_id
         )
+        gate = "pass" if passes_scope_gate(best_distance) else "reject"
+        retrieval_record = [
+            {
+                "attempt": 1,
+                "query": ask_request.message,
+                "rewrite_of": None,
+                "injected": None,
+                "doc_ids": doc_ids,
+                "best_distance": best_distance,
+                "threshold": SCOPE_THRESHOLD,
+                "gate": gate,
+            }
+        ]
+
+        # Attempt 2, only on reject: inject the thread anchor so a context-bound
+        # follow-up ("why does that work?") clears the relevance gate. Measured
+        # ~0.21 drop in PRX scope. Plain prefix, no pronoun resolution -- the
+        # gate showed substitution buys nothing over concatenation, and "that"
+        # has no team antecedent to substitute anyway.
+        if gate == "reject":
+            rewritten = f"{anchor_name} {ask_request.message}"
+            logger.info(
+                "Attempt 1 rejected (best_distance=%s); retrying with anchor "
+                "rewrite (conversation_id=%s)",
+                best_distance,
+                conversation.id,
+            )
+            doc_ids, documents, best_distance = retrieve_ranked(
+                rewritten, team_id=conversation.team_id
+            )
+            gate = "pass" if passes_scope_gate(best_distance) else "reject"
+            retrieval_record.append(
+                {
+                    "attempt": 2,
+                    "query": rewritten,
+                    "rewrite_of": ask_request.message,
+                    "injected": {"team_name": anchor_name},
+                    "doc_ids": doc_ids,
+                    "best_distance": best_distance,
+                    "threshold": SCOPE_THRESHOLD,
+                    "gate": gate,
+                }
+            )
     except Exception:
         logger.exception("Retrieval failed (conversation_id=%s)", conversation.id)
         raise HTTPException(
             status_code=503, detail="Could not retrieve tactical intel"
         )
-
-    gate = "pass" if passes_scope_gate(best_distance) else "reject"
-
-    # A list from day one, length 1 today. Session 2's rewrite-and-retry
-    # appends attempt 2 rather than needing a schema change.
-    retrieval_record = [
-        {
-            "attempt": 1,
-            "query": ask_request.message,
-            "doc_ids": doc_ids,
-            "best_distance": best_distance,
-            "gate": gate,
-        }
-    ]
 
     # Read history BEFORE persisting this turn, so the current question cannot
     # appear in its own context.
@@ -183,7 +220,7 @@ def ask_endpoint(
 
     if gate == "reject":
         logger.info(
-            "Query rejected by scope-gate (conversation_id=%s, best_distance=%s)",
+            "Query rejected after anchor rewrite (conversation_id=%s, best_distance=%s)",
             conversation.id,
             best_distance,
         )

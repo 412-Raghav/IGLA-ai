@@ -48,6 +48,20 @@ def is_tracked(team_id: int) -> bool:
     return team_id in TRACKED_TEAM_IDS
 
 
+_TEAM_NAMES = {team["team_id"]: team["name"] for team in TRACKED_TEAMS}
+
+
+def team_name(team_id: int) -> str:
+    """Display name for a tracked team_id, O(1) from a dict built at import.
+
+    Used to inject the thread anchor into a rewritten query. Raises KeyError
+    on an unknown id -- the caller holds a team_id that already passed
+    is_tracked at conversation birth, so a miss here is a broken invariant
+    (surface it as a 500), not user input to absorb.
+    """
+    return _TEAM_NAMES[team_id]
+
+
 if __name__ == "__main__":
     print(f"{len(TRACKED_TEAMS)} teams tracked:")
     for team in TRACKED_TEAMS:
