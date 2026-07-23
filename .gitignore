@@ -14,3 +14,4 @@ __pycache__/
 
 
 chroma_db/
+logs.*.json
