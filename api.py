@@ -31,6 +31,7 @@ from ingest import (
 from main import REJECTION_MESSAGE, ask_igla
 from models import User
 from rag.retriever import format_context, passes_scope_gate, retrieve_ranked
+from upload_routes import router as upload_router
 
 # The app owns root-logger config; library modules must not touch it. main.py
 # used to call basicConfig at module scope and api.py imports main, so main's
@@ -76,6 +77,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(upload_router)
 
 
 # Wire the limiter into the app and register the 429 handler.
