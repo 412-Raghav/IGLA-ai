@@ -4,7 +4,9 @@ from config import CHROMA_DB_PATH
 
 chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
-default_ef = embedding_functions.DefaultEmbeddingFunction()
+mpnet_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name="all-mpnet-base-v2"
+)
 
 
 def get_or_create_collection():
@@ -15,7 +17,7 @@ def get_or_create_collection():
     """
     collection = chroma_client.get_or_create_collection(
         name="igla_tactical_knowledge",
-        embedding_function=default_ef,
+        embedding_function=mpnet_ef,
         metadata={"hnsw:space": "cosine"}
     )
     return collection
