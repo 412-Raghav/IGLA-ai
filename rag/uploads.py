@@ -2,6 +2,8 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+from chromadb.errors import NotFoundError
+
 from rag.embedder import chroma_client, mpnet_ef
 
 PROVENANCE_UPLOAD = "user-uploaded"
@@ -29,6 +31,39 @@ def get_or_create_user_collection(user_id: int):
         embedding_function=mpnet_ef,
         metadata={"hnsw:space": "cosine"},
     )
+
+
+def get_user_collection(user_id: int):
+    """Open a user's upload collection for reading. Never creates.
+
+    Writers call get_or_create_user_collection; readers call this. The
+    serving path must not write: get-or-create on every turn would leave an
+    empty collection behind for every account that has never uploaded, which
+    is a write on a read path and clutter that nothing ever cleans up.
+
+    Returns None when the user has no uploads, which doubles as the
+    zero-uploads fast path -- the caller skips the second query entirely
+    rather than paying an embed to search nothing.
+
+    NotFoundError is caught specifically (measured against chromadb 1.5.9:
+    get_collection raises, it does not return None). A bare except here would
+    turn a real Chroma outage into "this user has no uploads" -- the query
+    would quietly serve shared-corpus-only results and nothing would report
+    that half the retrieval was missing.
+
+    embedding_function is passed explicitly rather than left to Chroma's
+    default. The default is MiniLM at 384 dimensions; these collections are
+    mpnet at 768. Relying on Chroma to restore the stored function is a
+    guess, and the failure it protects against is the dimension-mismatch
+    class that already has an open finding against it.
+    """
+    try:
+        return chroma_client.get_collection(
+            name=f"uploads_user_{user_id}",
+            embedding_function=mpnet_ef,
+        )
+    except NotFoundError:
+        return None
 
 
 def chunk_text(

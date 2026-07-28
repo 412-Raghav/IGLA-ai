@@ -30,7 +30,7 @@ from ingest import (
 )
 from main import REJECTION_MESSAGE, ask_igla
 from models import User
-from rag.retriever import format_context, passes_scope_gate, retrieve_ranked
+from rag.retriever import format_context, passes_scope_gate, retrieve_merged
 from upload_routes import router as upload_router
 
 # The app owns root-logger config; library modules must not touch it. main.py
@@ -141,14 +141,16 @@ def ask_endpoint(
     anchor_name = team_name(conversation.team_id)
 
     # Both retrieval attempts share one error boundary: a Chroma failure on
-    # either maps to 503, and only retrieve_ranked can throw inside it (the
+    # either maps to 503, and only retrieve_merged can throw inside it (the
     # gate check and record-building can't). anchor_name is resolved above,
     # OUTSIDE the boundary, so an unknown-team bug surfaces as 500 -- not a
     # masked 503 that would blame the vector store for a registry mismatch.
     try:
-        # Attempt 1: the message as typed.
-        doc_ids, documents, best_distance = retrieve_ranked(
-            ask_request.message, team_id=conversation.team_id
+        # Attempt 1: the message as typed. Uploads join here, not only on the
+        # retry -- best_distance must see them at the FIRST gate check, or a
+        # note that would have rescued the turn never gets a vote.
+        doc_ids, documents, best_distance, origins = retrieve_merged(
+            ask_request.message, conversation.team_id, user.id
         )
         gate = "pass" if passes_scope_gate(best_distance) else "reject"
         retrieval_record = [
@@ -158,6 +160,7 @@ def ask_endpoint(
                 "rewrite_of": None,
                 "injected": None,
                 "doc_ids": doc_ids,
+                "origins": origins,
                 "best_distance": best_distance,
                 "threshold": SCOPE_THRESHOLD,
                 "gate": gate,
@@ -177,8 +180,8 @@ def ask_endpoint(
                 best_distance,
                 conversation.id,
             )
-            doc_ids, documents, best_distance = retrieve_ranked(
-                rewritten, team_id=conversation.team_id
+            doc_ids, documents, best_distance, origins = retrieve_merged(
+                rewritten, conversation.team_id, user.id
             )
             gate = "pass" if passes_scope_gate(best_distance) else "reject"
             retrieval_record.append(
@@ -188,6 +191,7 @@ def ask_endpoint(
                     "rewrite_of": ask_request.message,
                     "injected": {"team_name": anchor_name},
                     "doc_ids": doc_ids,
+                    "origins": origins,
                     "best_distance": best_distance,
                     "threshold": SCOPE_THRESHOLD,
                     "gate": gate,
@@ -233,6 +237,7 @@ def ask_endpoint(
             "response": REJECTION_MESSAGE,
             "conversation_id": str(conversation.id),
             "gate": gate,
+            "origins": [],
         }
 
     try:
@@ -248,6 +253,7 @@ def ask_endpoint(
         "response": answer,
         "conversation_id": str(conversation.id),
         "gate": gate,
+        "origins": origins,
     }
 
 

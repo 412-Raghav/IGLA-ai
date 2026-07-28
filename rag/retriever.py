@@ -1,5 +1,29 @@
+"""Retrieval and ranking for IGLA.
+
+Four entry points; which one to call depends on who is asking.
+
+    retrieve_merged   -- the serving path. Shared corpus plus the caller's
+                         own uploads, ranked together. Needs a user_id.
+    retrieve_ranked   -- one collection. What the eval harness scores and
+                         what retrieve_context wraps. No user, no uploads.
+    retrieve_context  -- retrieve_ranked plus formatting, for callers that
+                         want a prompt block and nothing else.
+    format_context    -- formatting alone, for callers already holding
+                         documents.
+
+_retrieve_candidates is the shared layer under the first two. It exists so a
+merge can rank two result sets together: parallel lists can only be
+recombined by index, and indices are not comparable across collections.
+
+KNOWN GAP: the eval harness scores retrieve_ranked, so it measures
+shared-corpus ranking only. A user with uploads is served a ranking the eval
+cannot see.
+"""
+
+
 from config import SCOPE_THRESHOLD
 from rag.embedder import get_or_create_collection
+from rag.uploads import PROVENANCE_UPLOAD, get_user_collection
 
 
 # When a query is scoped to a team, pull a deeper candidate pool than the
@@ -41,19 +65,74 @@ def _build_where(team_id):
     return {"$or": [{"team_id": team_id}, {"scope": "general"}]}
 
 
-def _team_first_order(metadatas):
-    """Stable index order placing the scouted team's docs above the general
-    shelf. Returns indices (not docs) so ids, documents, and distances reorder
-    by one permutation and stay aligned -- the eval scores by id while serving
-    formats docs, so both must reorder identically.
+def _rank_key(record: dict) -> tuple[bool, float]:
+    """Sort key placing the scouted team's docs above the general shelf.
 
-    General docs (scope == "general") sort after team docs; semantic
-    (distance-ascending) order is preserved within each group (stable sort).
+    Returns (is_general, distance). False sorts before True, so team docs --
+    and, on the serving path, the caller's own uploads, which carry no scope
+    key at all -- rank ahead of the universal shelf, ordered by distance
+    within each tier.
+
+    This replaces the earlier stable sort on the boolean alone. That version
+    relied on the incoming list already being distance-ascending, which is
+    true of one Chroma result and false of two concatenated ones. Making
+    distance an explicit part of the key is what lets one rule order a
+    merged pool without changing what it does to a single one.
     """
-    return sorted(
-        range(len(metadatas)),
-        key=lambda i: metadatas[i].get("scope") == "general",
+    return (record["metadata"].get("scope") == "general", record["distance"])
+
+
+def _origin(record: dict) -> str:
+    """Label which shelf a record came from, for the response payload.
+
+    Reads `provenance`, which only upload chunks carry. Deliberately NOT
+    `source`: the shared corpus stores its origin there ("vlr.gg"), while an
+    upload stores its filename there. The same key means two different
+    things across the two schemas, so it cannot be the discriminator.
+    """
+    return (
+        "upload"
+        if record["metadata"].get("provenance") == PROVENANCE_UPLOAD
+        else "corpus"
     )
+
+
+def _retrieve_candidates(
+    query: str, fetch_k: int, where: dict | None, collection
+) -> list[dict]:
+    """Query one collection and return per-document records.
+
+    The shared layer under both retrieval entry points. Bundling each
+    document with its own distance and metadata is what makes a two-source
+    merge possible at all: parallel lists can only be recombined by index,
+    and indices are not comparable across collections.
+
+    The zip here is safe -- the four lists come from a single Chroma result
+    and are equal-length by construction. It is pairing ACROSS results that
+    breaks, since a query for n_results returns min(n_results, N).
+
+    Returns [] when nothing matches; the caller decides what that means.
+    """
+    results = collection.query(
+        query_texts=[query],
+        n_results=fetch_k,
+        where=where,
+        include=["documents", "distances", "metadatas"],
+    )
+    return [
+        {
+            "id": doc_id,
+            "document": document,
+            "distance": distance,
+            "metadata": metadata,
+        }
+        for doc_id, document, distance, metadata in zip(
+            results["ids"][0],
+            results["documents"][0],
+            results["distances"][0],
+            results["metadatas"][0],
+        )
+    ]
 
 
 def retrieve_ranked(
@@ -86,30 +165,87 @@ def retrieve_ranked(
     # queries keep the original behavior byte-for-byte.
     fetch_k = _RERANK_POOL if team_id is not None else n_results
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=fetch_k,
-        where=_build_where(team_id),
-        include=["documents", "distances", "metadatas"],
+    records = _retrieve_candidates(
+        query, fetch_k, _build_where(team_id), collection
     )
-    ids = results["ids"][0]
-    documents = results["documents"][0]
-    distances = results["distances"][0]
-    metadatas = results["metadatas"][0]
-
-    if not documents:
+    if not records:
         return [], [], None
 
     # Captured before the re-rank: the scope-gate must keep seeing the true
-    # closest match, not the promoted team doc.
-    best_distance = distances[0]
+    # closest match, not the promoted team doc. Chroma returns records
+    # distance-ascending, so record 0 is the closest.
+    best_distance = records[0]["distance"]
 
     if team_id is not None:
-        order = _team_first_order(metadatas)
-        ids = [ids[i] for i in order]
-        documents = [documents[i] for i in order]
+        records = sorted(records, key=_rank_key)
 
-    return ids[:n_results], documents[:n_results], best_distance
+    top = records[:n_results]
+    return [r["id"] for r in top], [r["document"] for r in top], best_distance
+
+
+def retrieve_merged(
+    query: str, team_id: int, user_id: int, n_results: int = 3
+) -> tuple[list[str], list[str], float | None, list[str]]:
+    """Retrieve across the shared corpus and the caller's own uploads.
+
+    Isolation is structural, not filtered: only this user's collection is
+    ever opened, so another analyst's notes cannot surface no matter what a
+    where-filter says. There is no isolation clause to get wrong and none to
+    regress in a later refactor.
+
+    Both sides are scoped to team_id. The upload filter is a bare exact
+    match, not _build_where's $or -- upload chunks carry no `scope` key, so
+    there is no general shelf on that side. Without it, a two-chunk
+    collection's nearest neighbour (measured at 0.703, inside every
+    threshold we run) would contaminate every thread about a different team:
+    "nearest" carries almost no information when N is 2.
+
+    Args:
+        query: The tactical situation from the user.
+        team_id: Thread anchor. Scopes both collections.
+        user_id: Whose uploads to search. Server-assigned, never from input.
+        n_results: How many documents to return (default 3).
+
+    Returns:
+        (ids, documents, best_distance, origins) -- origins parallel to ids,
+        each "upload" or "corpus".
+    """
+    shared = _retrieve_candidates(
+        query, _RERANK_POOL, _build_where(team_id), get_or_create_collection()
+    )
+
+    # Zero-uploads fast path: no collection, no second query, no embed.
+    user_collection = get_user_collection(user_id)
+    uploads = (
+        _retrieve_candidates(
+            query, n_results, {"team_id": team_id}, user_collection
+        )
+        if user_collection is not None
+        else []
+    )
+
+    if not shared and not uploads:
+        return [], [], None, []
+
+    # min across both, not records[0]: each list is distance-ascending on its
+    # own, the concatenation is not, and the gate must see the true closest
+    # match wherever it came from. inf for a missing side -- 0.0 would pass
+    # every query ever asked, and would never raise.
+    best_distance = min(
+        shared[0]["distance"] if shared else float("inf"),
+        uploads[0]["distance"] if uploads else float("inf"),
+    )
+
+    # One rule orders the merged pool: _rank_key demotes the general shelf
+    # and sorts by distance within each tier. Uploads carry no `scope`, so
+    # they land in the same tier as team docs and compete on distance alone.
+    merged = sorted(shared + uploads, key=_rank_key)[:n_results]
+    return (
+        [r["id"] for r in merged],
+        [r["document"] for r in merged],
+        best_distance,
+        [_origin(r) for r in merged],
+    )
 
 
 def format_context(documents: list[str]) -> str:
