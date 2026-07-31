@@ -4,166 +4,240 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IGLA — In-Game Leader AI</title>
+  <!-- Crosshair mark, embedded so there's no favicon file to serve. -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e23636' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='7'/%3E%3Cline x1='12' y1='1.5' x2='12' y2='5'/%3E%3Cline x1='12' y1='19' x2='12' y2='22.5'/%3E%3Cline x1='1.5' y1='12' x2='5' y2='12'/%3E%3Cline x1='19' y1='12' x2='22.5' y2='12'/%3E%3C/svg%3E" />
   <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
     body {
       font-family: system-ui, sans-serif;
-      max-width: 1040px;
-      margin: 40px auto;
-      padding: 0 16px;
       background: #0f1115;
       color: #e6e6e6;
+      overflow: hidden; /* the app owns its own scrolling */
     }
-    h1 { font-size: 1.4rem; margin-bottom: 4px; }
-    p { color: #9aa0a6; }
+
+    /* form controls (palette unchanged) */
     label { display: block; margin: 16px 0 6px; color: #9aa0a6; font-size: 0.9rem; }
     select, input[type="text"], input[type="password"] {
-      width: 100%;
-      padding: 10px 12px;
-      font-size: 1rem;
-      background: #1a1d23;
-      color: #e6e6e6;
-      border: 1px solid #333;
-      border-radius: 8px;
-      box-sizing: border-box;
+      width: 100%; padding: 10px 12px; font-size: 1rem;
+      background: #1a1d23; color: #e6e6e6; border: 1px solid #333; border-radius: 8px;
     }
     select:disabled { opacity: 0.5; }
     textarea {
-      width: 100%;
-      min-height: 72px;
-      padding: 12px;
-      font-size: 1rem;
-      background: #1a1d23;
-      color: #e6e6e6;
-      border: 1px solid #333;
-      border-radius: 8px;
-      box-sizing: border-box;
-      resize: vertical;
+      width: 100%; min-height: 44px; max-height: 200px; padding: 12px; font-size: 1rem;
+      background: #1a1d23; color: #e6e6e6; border: 1px solid #333; border-radius: 8px;
+      resize: none; font-family: inherit;
     }
     button {
-      margin-top: 12px;
-      padding: 10px 20px;
-      font-size: 1rem;
-      background: #e23636;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
+      padding: 10px 20px; font-size: 1rem; background: #e23636; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     button.secondary { background: #2a2d35; }
-    button.small { margin-top: 0; padding: 6px 14px; font-size: 0.9rem; }
+    button.small { padding: 6px 14px; font-size: 0.9rem; }
     button.full { width: 100%; }
-    .auth-actions { display: flex; gap: 8px; }
+
+    /* ---------- LOGIN (centered in viewport) ---------- */
+    #login-panel {
+      height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 24px;
+    }
+    #login-card { width: 100%; max-width: 380px; }
+    #login-card h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    #login-card p { color: #9aa0a6; margin-top: 0; }
+    .auth-actions { display: flex; gap: 8px; margin-top: 16px; }
     .auth-actions button { flex: 1; }
     #auth-msg { margin-top: 12px; min-height: 20px; color: #e0777c; font-size: 0.9rem; }
 
-    /* Two columns: threads on the left, the open thread on the right. */
-    #app-panel { display: flex; gap: 20px; align-items: flex-start; }
-    #sidebar { width: 210px; flex-shrink: 0; }
-    #main { flex: 1; min-width: 0; }
+    /* ---------- APP SHELL ---------- */
+    #app-panel { height: 100vh; display: flex; }
 
-    .sidebar-head { display: flex; justify-content: space-between; align-items: center; }
-    .sidebar-head strong { font-size: 1.1rem; }
-    .whoami-line { color: #9aa0a6; font-size: 0.8rem; margin: 6px 0 12px; }
-    .sidebar-label { color: #666; font-size: 0.75rem; margin: 18px 0 6px; text-transform: uppercase; }
-
-    .thread-item {
-      padding: 8px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-      border: 1px solid transparent;
+    /* sidebar */
+    #sidebar {
+      width: 240px; flex-shrink: 0; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #121419; border-right: 1px solid #2a2d35;
+      transition: width 0.15s ease;
     }
+    #sidebar.collapsed { width: 60px; }
+    .sidebar-top { padding: 14px 10px 8px; }
+    .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px; }
+    .sidebar-bottom { padding: 8px 10px 14px; border-top: 1px solid #2a2d35; }
+
+    .sidebar-head {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 28px; margin-bottom: 12px;
+    }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 1.1rem; }
+    .brand-mark { width: 20px; height: 20px; flex-shrink: 0; }
+
+    .icon-btn {
+      background: none; border: none; padding: 6px; margin: 0; cursor: pointer;
+      color: #9aa0a6; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+    }
+    .icon-btn:hover { background: #16191f; color: #e6e6e6; }
+    .icon-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 8px 10px; margin: 0 0 6px; border-radius: 8px;
+      background: none; border: 1px solid transparent; color: #e6e6e6;
+      font-size: 0.9rem; cursor: pointer; text-align: left;
+    }
+    .nav-item:hover { background: #16191f; }
+    .nav-item.primary { background: #e23636; color: #fff; justify-content: center; border: none; }
+    .nav-item.primary:hover { background: #c92f2f; }
+    .nav-icon { width: 18px; height: 18px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    .collapsed-only { display: none; }
+    .whoami-line { color: #9aa0a6; font-size: 0.8rem; margin-bottom: 8px; padding: 0 2px; }
+    .sidebar-label { color: #666; font-size: 0.72rem; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+    /* collapsed: hide labels/wordmark/lists, show rail icons, center everything */
+    #sidebar.collapsed .nav-label,
+    #sidebar.collapsed .brand,
+    #sidebar.collapsed .expanded-only { display: none !important; }
+    #sidebar.collapsed .collapsed-only { display: flex; }
+    #sidebar.collapsed .nav-item { justify-content: center; gap: 0; padding: 8px; }
+    #sidebar.collapsed .sidebar-head { justify-content: center; }
+
+    .thread-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
     .thread-item:hover { background: #16191f; }
     .thread-item.active { background: #1a1d23; border-color: #333; }
     .thread-title { font-size: 0.85rem; }
     .thread-meta { font-size: 0.75rem; color: #666; margin-top: 2px; }
 
-    #thread-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid #2a2d35;
-      padding-bottom: 10px;
-      margin-bottom: 16px;
-    }
-    .badge {
-      background: #2a2d35;
-      color: #9aa0a6;
-      font-size: 0.75rem;
-      padding: 3px 10px;
-      border-radius: 6px;
-    }
+    input[type="file"] { width: 100%; font-size: 0.85rem; color: #9aa0a6; margin-top: 4px; }
+    input[type="file"]::file-selector-button { background: #2a2d35; color: #e6e6e6; border: 1px solid #333; border-radius: 6px; padding: 6px 10px; margin-right: 8px; cursor: pointer; font-size: 0.85rem; }
+    #upload-msg { font-size: 0.8rem; color: #9aa0a6; min-height: 16px; margin-top: 6px; }
+    #note-list { margin-top: 8px; }
+    .note-empty { color: #666; font-size: 0.8rem; padding: 8px 10px; }
+    .note-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid transparent; }
+    .note-item:hover { background: #16191f; }
+    .note-info { min-width: 0; }
+    .note-name { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .note-meta { font-size: 0.75rem; color: #666; margin-top: 2px; }
+    .note-del { background: none; border: none; color: #666; cursor: pointer; font-size: 1rem; line-height: 1; margin: 0; padding: 2px 4px; flex-shrink: 0; }
+    .note-del:hover { color: #e23636; }
 
-    #messages { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
-    .bubble {
-      max-width: 82%;
-      padding: 10px 14px;
-      border-radius: 10px;
-      white-space: pre-wrap;
-      font-size: 0.92rem;
-      line-height: 1.55;
+    /* ---------- MAIN ---------- */
+    #main { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; }
+    #empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #666; }
+    #thread-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #thread-header {
+      flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 14px 20px; border-bottom: 1px solid #2a2d35;
     }
+    #thread-title { font-size: 0.98rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge { background: #2a2d35; color: #9aa0a6; font-size: 0.75rem; padding: 3px 10px; border-radius: 6px; flex-shrink: 0; }
+
+    #messages-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+    #messages { max-width: 720px; margin: 0 auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .bubble { max-width: 82%; padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; font-size: 0.92rem; line-height: 1.55; }
     .bubble.user { align-self: flex-end; background: #2a2d35; }
     .bubble.assistant { align-self: flex-start; background: #1a1d23; border: 1px solid #333; }
-    /* A gate-rejected exchange is styled as what it is: a refusal, not an
-       answer. Session 1 ships this failure on purpose -- Session 2 removes it. */
     .bubble.rejected { background: #2c1a1c; border-color: #5a2a2e; color: #e0777c; }
-    .composer-row { display: flex; gap: 8px; align-items: flex-start; }
-    .composer-row button { margin-top: 0; }
-    #empty-state { color: #666; padding: 40px 0; text-align: center; }
+    .origin-tag { display: inline-block; margin-top: 8px; font-size: 0.72rem; color: #7fb0d4; background: #16232c; border: 1px solid #24404f; padding: 2px 8px; border-radius: 6px; }
+
+    .composer-wrap { flex-shrink: 0; border-top: 1px solid #2a2d35; padding: 12px 20px; }
+    .composer-row { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+    .composer-row button { flex-shrink: 0; }
   </style>
 </head>
 <body>
-  <!-- State 1 — login. Shown when /auth/me reports we are not authenticated. -->
-  <div id="login-panel">
-    <h1>IGLA — In-Game Leader AI</h1>
-    <p>Sign in, or create an account, to get tactical reads.</p>
-
-    <label for="username">Username</label>
-    <input id="username" type="text" autocomplete="username" />
-
-    <label for="password">Password</label>
-    <input id="password" type="password" autocomplete="current-password" />
-
-    <div class="auth-actions">
-      <button id="login-btn">Log in</button>
-      <button id="register-btn" class="secondary">Create account</button>
+  <!-- State 1 — login, centered in the viewport. -->
+  <div id="login-panel" style="display: none;">
+    <div id="login-card">
+      <h1>IGLA — In-Game Leader AI</h1>
+      <p>Sign in, or create an account, to get tactical reads.</p>
+      <label for="username">Username</label>
+      <input id="username" type="text" autocomplete="username" />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <div class="auth-actions">
+        <button id="login-btn">Log in</button>
+        <button id="register-btn" class="secondary">Create account</button>
+      </div>
+      <div id="auth-msg"></div>
     </div>
-
-    <div id="auth-msg"></div>
   </div>
 
-  <!-- States 2 and 3 both live here: sidebar always, thread-view only when a
-       thread is open. The team dropdown moved out of the main screen -- it is
-       now part of creating a thread, because team_id is the thread's anchor
-       and is asked once, at birth. -->
+  <!-- States 2 & 3 — the app shell. -->
   <div id="app-panel" style="display: none;">
     <aside id="sidebar">
-      <div class="sidebar-head">
-        <strong>IGLA</strong>
-        <button id="logout-btn" class="secondary small">Log out</button>
+      <div class="sidebar-top">
+        <div class="sidebar-head">
+          <span class="brand">
+            <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="#e23636" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>
+            <span>IGLA</span>
+          </span>
+          <button id="collapse-btn" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+          </button>
+        </div>
+
+        <button id="new-thread-btn" class="nav-item primary">
+          <svg class="nav-icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="nav-label">New thread</span>
+        </button>
+
+        <!-- visible only when collapsed: tap to expand back to the lists -->
+        <button id="rail-threads" class="nav-item collapsed-only" title="Threads" aria-label="Threads">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        </button>
+        <button id="rail-notes" class="nav-item collapsed-only" title="My notes" aria-label="My notes">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </button>
       </div>
-      <div class="whoami-line">Signed in as <span id="whoami"></span></div>
 
-      <button id="new-thread-btn" class="full">+ New thread</button>
+      <div class="sidebar-scroll">
+        <div id="new-thread-form" class="expanded-only" style="display: none;">
+          <label for="team">Opponent</label>
+          <select id="team" disabled>
+            <option value="">Loading teams…</option>
+          </select>
+          <div class="auth-actions">
+            <button id="create-thread-btn" class="small">Create</button>
+            <button id="cancel-thread-btn" class="secondary small">Cancel</button>
+          </div>
+        </div>
 
-      <div id="new-thread-form" style="display: none;">
-        <label for="team">Opponent</label>
-        <select id="team" disabled>
-          <option value="">Loading teams…</option>
-        </select>
-        <div class="auth-actions">
-          <button id="create-thread-btn" class="small">Create</button>
-          <button id="cancel-thread-btn" class="secondary small">Cancel</button>
+        <div class="expanded-only">
+          <div class="sidebar-label">Recent</div>
+          <div id="thread-list"></div>
+        </div>
+
+        <div class="expanded-only">
+          <div class="sidebar-label">My notes</div>
+          <button id="add-note-btn" class="full secondary small">+ Add note</button>
+          <div id="upload-form" style="display: none;">
+            <label for="upload-file">File (.txt or .md)</label>
+            <input id="upload-file" type="file" accept=".txt,.md" />
+            <label for="upload-team">About opponent</label>
+            <select id="upload-team" disabled>
+              <option value="">Loading teams…</option>
+            </select>
+            <div class="auth-actions">
+              <button id="upload-btn" class="small">Upload</button>
+              <button id="cancel-upload-btn" class="secondary small">Cancel</button>
+            </div>
+            <div id="upload-msg"></div>
+          </div>
+          <div id="note-list"></div>
         </div>
       </div>
 
-      <div class="sidebar-label">Recent</div>
-      <div id="thread-list"></div>
+      <div class="sidebar-bottom">
+        <div class="whoami-line expanded-only">Signed in as <span id="whoami"></span></div>
+        <button id="logout-btn" class="nav-item" title="Log out">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <span class="nav-label">Log out</span>
+        </button>
+      </div>
     </aside>
 
     <main id="main">
-      <div id="empty-state">
+      <div id="empty-state" style="display: none;">
         <p>Pick a thread, or start a new one.</p>
       </div>
 
@@ -172,10 +246,14 @@
           <span id="thread-title"></span>
           <span id="thread-team" class="badge"></span>
         </div>
-        <div id="messages"></div>
-        <div class="composer-row">
-          <textarea id="message-box" placeholder="Ask a follow-up… (Enter to send)"></textarea>
-          <button id="send-btn">Send</button>
+        <div id="messages-scroll">
+          <div id="messages"></div>
+        </div>
+        <div class="composer-wrap">
+          <div class="composer-row">
+            <textarea id="message-box" placeholder="Ask a follow-up… (Enter to send)"></textarea>
+            <button id="send-btn">Send</button>
+          </div>
         </div>
       </div>
     </main>
@@ -183,6 +261,7 @@
 
   <script>
     const API_BASE = "";
+    const BASE_TITLE = "IGLA — In-Game Leader AI";
 
     const loginPanel = document.getElementById("login-panel");
     const appPanel = document.getElementById("app-panel");
@@ -195,6 +274,13 @@
     const registerBtn = document.getElementById("register-btn");
     const logoutBtn = document.getElementById("logout-btn");
 
+    // shell
+    const sidebar = document.getElementById("sidebar");
+    const collapseBtn = document.getElementById("collapse-btn");
+    const railThreads = document.getElementById("rail-threads");
+    const railNotes = document.getElementById("rail-notes");
+    const SIDEBAR_KEY = "igla_sidebar_collapsed";
+
     const newThreadBtn = document.getElementById("new-thread-btn");
     const newThreadForm = document.getElementById("new-thread-form");
     const createThreadBtn = document.getElementById("create-thread-btn");
@@ -202,23 +288,55 @@
     const teamSelect = document.getElementById("team");
     const threadList = document.getElementById("thread-list");
 
+    const addNoteBtn = document.getElementById("add-note-btn");
+    const uploadForm = document.getElementById("upload-form");
+    const uploadFile = document.getElementById("upload-file");
+    const uploadTeamSelect = document.getElementById("upload-team");
+    const uploadBtn = document.getElementById("upload-btn");
+    const cancelUploadBtn = document.getElementById("cancel-upload-btn");
+    const uploadMsg = document.getElementById("upload-msg");
+    const noteList = document.getElementById("note-list");
+
     const emptyState = document.getElementById("empty-state");
     const threadView = document.getElementById("thread-view");
     const threadTitle = document.getElementById("thread-title");
     const threadTeam = document.getElementById("thread-team");
+    const messagesScroll = document.getElementById("messages-scroll");
     const messagesBox = document.getElementById("messages");
     const messageBox = document.getElementById("message-box");
     const sendBtn = document.getElementById("send-btn");
 
-    // The one piece of client state: which thread is open. null = none.
     let currentConversationId = null;
-    // team_id -> display name, built from /teams so the badge can label a
-    // thread without a second lookup. The registry stays the only source.
     const teamNames = {};
 
-    // FastAPI validation errors put `detail` as an array of {loc, msg, ...};
-    // a raised HTTPException puts `detail` as a plain string. Handle both so a
-    // 422 and a 401/404/409 each surface a real reason.
+    // --- Sidebar collapse (persisted; index.html is a real page, so localStorage is fine) ---
+    function setCollapsed(collapsed) {
+      sidebar.classList.toggle("collapsed", collapsed);
+      try { localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0"); } catch (e) {}
+    }
+    function collapseSidebar() {
+      // close open forms so they don't reappear on re-expand
+      newThreadForm.style.display = "none";
+      uploadForm.style.display = "none";
+      setCollapsed(true);
+    }
+    function expandSidebar() { setCollapsed(false); }
+    collapseBtn.addEventListener("click", () => {
+      sidebar.classList.contains("collapsed") ? expandSidebar() : collapseSidebar();
+    });
+    railThreads.addEventListener("click", expandSidebar);
+    railNotes.addEventListener("click", expandSidebar);
+    function restoreSidebar() {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem(SIDEBAR_KEY) === "1"; } catch (e) {}
+      sidebar.classList.toggle("collapsed", collapsed);
+    }
+
+    // Tab title tracks the open thread; also gives the tab-hover tooltip for free.
+    function setTitle(thread) { document.title = thread ? `IGLA — ${thread}` : BASE_TITLE; }
+
+    function scrollMessagesToBottom() { messagesScroll.scrollTop = messagesScroll.scrollHeight; }
+
     function errorText(payload, status) {
       const detail = payload?.detail;
       if (typeof detail === "string") return detail;
@@ -235,57 +353,45 @@
       return `${Math.floor(hrs / 24)}d ago`;
     }
 
-    // Every authenticated call routes through here so a dead session drops to
-    // the login panel from ONE place. Returns null when that happened.
     async function authedFetch(path, options) {
       const res = await fetch(`${API_BASE}${path}`, options);
-      if (res.status === 401) {
-        showLogin();
-        return null;
-      }
+      if (res.status === 401) { showLogin(); return null; }
       return res;
     }
 
     function showApp(username) {
       loginPanel.style.display = "none";
-      // flex, not block -- #app-panel is the two-column layout.
       appPanel.style.display = "flex";
       whoami.textContent = username;
+      restoreSidebar();
       loadTeams();
       loadThreads();
+      loadUploads();
       showEmpty();
     }
 
     function showLogin() {
       appPanel.style.display = "none";
-      loginPanel.style.display = "block";
+      loginPanel.style.display = "flex";
       currentConversationId = null;
+      setTitle(null);
     }
 
     function showEmpty() {
       threadView.style.display = "none";
-      emptyState.style.display = "block";
+      emptyState.style.display = "flex";
       currentConversationId = null;
+      setTitle(null);
     }
 
-    // On load, ask the server who we are. Same-origin means the session cookie
-    // rides along automatically -- no `credentials` option needed anywhere.
     async function checkAuth() {
       try {
         const res = await fetch(`${API_BASE}/auth/me`);
-        if (res.ok) {
-          const data = await res.json();
-          showApp(data.username);
-        } else {
-          showLogin();
-        }
-      } catch (err) {
-        showLogin();
-      }
+        if (res.ok) { const data = await res.json(); showApp(data.username); }
+        else { showLogin(); }
+      } catch (err) { showLogin(); }
     }
 
-    // One code path for logging in, shared by the Log in button and the
-    // auto-login that follows a successful registration.
     async function doLogin(username, password) {
       authMsg.textContent = "";
       try {
@@ -294,37 +400,27 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          showApp(data.username);
-          return;
-        }
+        if (res.ok) { const data = await res.json(); showApp(data.username); return; }
         const payload = await res.json().catch(() => null);
         authMsg.textContent = errorText(payload, res.status);
-      } catch (err) {
-        authMsg.textContent = `Request failed: ${err.message}`;
-      }
+      } catch (err) { authMsg.textContent = `Request failed: ${err.message}`; }
     }
 
-    loginBtn.addEventListener("click", () => {
+    function attemptLogin() {
       const username = usernameBox.value.trim();
       const password = passwordBox.value;
-      if (!username || !password) {
-        authMsg.textContent = "Enter a username and password.";
-        return;
-      }
+      if (!username || !password) { authMsg.textContent = "Enter a username and password."; return; }
       doLogin(username, password);
-    });
+    }
+    loginBtn.addEventListener("click", attemptLogin);
+    [usernameBox, passwordBox].forEach((el) =>
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") attemptLogin(); })
+    );
 
-    // Register, then log straight in on success -- so a new user lands in the
-    // app instead of being bounced back to a form they just filled in.
     registerBtn.addEventListener("click", async () => {
       const username = usernameBox.value.trim();
       const password = passwordBox.value;
-      if (!username || !password) {
-        authMsg.textContent = "Enter a username and password.";
-        return;
-      }
+      if (!username || !password) { authMsg.textContent = "Enter a username and password."; return; }
       authMsg.textContent = "";
       try {
         const res = await fetch(`${API_BASE}/auth/register`, {
@@ -332,78 +428,155 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
         });
-        if (res.ok) {
-          doLogin(username, password);
-          return;
-        }
+        if (res.ok) { doLogin(username, password); return; }
         const payload = await res.json().catch(() => null);
         authMsg.textContent = errorText(payload, res.status);
-      } catch (err) {
-        authMsg.textContent = `Request failed: ${err.message}`;
-      }
+      } catch (err) { authMsg.textContent = `Request failed: ${err.message}`; }
     });
 
     logoutBtn.addEventListener("click", async () => {
-      try {
-        await fetch(`${API_BASE}/auth/logout`, { method: "POST" });
-      } catch (err) {
-        // Even if the network call fails, drop to the login screen locally.
-      }
+      try { await fetch(`${API_BASE}/auth/logout`, { method: "POST" }); } catch (err) {}
       showLogin();
     });
 
-    // The team list has one owner: data/team_registry.py, served via /teams.
-    // Hardcoding options here would be a second copy that silently drifts.
     async function loadTeams() {
       try {
         const res = await fetch(`${API_BASE}/teams`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
         const data = await res.json();
         teamSelect.innerHTML = "";
+        uploadTeamSelect.innerHTML = "";
         for (const team of data.teams) {
           teamNames[team.team_id] = team.name;
-          const opt = document.createElement("option");
-          opt.value = team.team_id;
-          opt.textContent = `${team.name} — ${team.region}`;
-          teamSelect.appendChild(opt);
+          const label = `${team.name} — ${team.region}`;
+          const t = document.createElement("option");
+          t.value = team.team_id; t.textContent = label; teamSelect.appendChild(t);
+          const u = document.createElement("option");
+          u.value = team.team_id; u.textContent = label; uploadTeamSelect.appendChild(u);
         }
         teamSelect.disabled = false;
+        uploadTeamSelect.disabled = false;
       } catch (err) {
         teamSelect.innerHTML = '<option value="">Unavailable</option>';
+        uploadTeamSelect.innerHTML = '<option value="">Unavailable</option>';
       }
     }
 
     async function loadThreads() {
       const res = await authedFetch("/conversations");
       if (!res || !res.ok) return;
-
       const data = await res.json();
       threadList.innerHTML = "";
       for (const conv of data.conversations) {
         const item = document.createElement("div");
         item.className = "thread-item";
         if (conv.id === currentConversationId) item.classList.add("active");
-
         const title = document.createElement("div");
         title.className = "thread-title";
-        // Null until the first turn lands -- set_title_if_absent names the
-        // thread from its first question, so a fresh thread has no title yet.
         title.textContent = conv.title ?? "New thread";
-
         const meta = document.createElement("div");
         meta.className = "thread-meta";
         const name = teamNames[conv.team_id] ?? conv.team_id;
         meta.textContent = `${name} · ${relativeTime(conv.updated_at)}`;
-
         item.append(title, meta);
         item.addEventListener("click", () => openThread(conv.id));
         threadList.appendChild(item);
       }
     }
 
-    // textContent, never innerHTML: message bodies come from the user and from
-    // Claude, and neither is trusted markup.
+    async function loadUploads() {
+      const res = await authedFetch("/uploads");
+      if (!res || !res.ok) return;
+      const uploads = await res.json();
+      noteList.innerHTML = "";
+      if (uploads.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "note-empty";
+        empty.textContent = "No notes yet.";
+        noteList.appendChild(empty);
+        return;
+      }
+      for (const note of uploads) {
+        const item = document.createElement("div");
+        item.className = "note-item";
+        const info = document.createElement("div");
+        info.className = "note-info";
+        const name = document.createElement("div");
+        name.className = "note-name";
+        name.textContent = note.source;
+        name.title = note.source;
+        const meta = document.createElement("div");
+        meta.className = "note-meta";
+        const teamName = teamNames[note.team_id] ?? note.team_id;
+        const chunkLabel = note.chunks === 1 ? "1 chunk" : `${note.chunks} chunks`;
+        meta.textContent = `${teamName} · ${chunkLabel}`;
+        info.append(name, meta);
+        const del = document.createElement("button");
+        del.className = "note-del";
+        del.textContent = "×";
+        del.title = "Delete note";
+        del.addEventListener("click", () => deleteUpload(note.upload_id, note.source));
+        item.append(info, del);
+        noteList.appendChild(item);
+      }
+    }
+
+    async function deleteUpload(uploadId, source) {
+      if (!confirm(`Delete "${source}"? This can't be undone.`)) return;
+      const res = await authedFetch(`/uploads/${uploadId}`, { method: "DELETE" });
+      if (!res) return;
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        alert(errorText(payload, res.status));
+        return;
+      }
+      loadUploads();
+    }
+
+    newThreadBtn.addEventListener("click", () => {
+      if (sidebar.classList.contains("collapsed")) expandSidebar();
+      newThreadForm.style.display = newThreadForm.style.display === "none" ? "block" : "none";
+    });
+    cancelThreadBtn.addEventListener("click", () => { newThreadForm.style.display = "none"; });
+
+    addNoteBtn.addEventListener("click", () => {
+      if (sidebar.classList.contains("collapsed")) expandSidebar();
+      uploadForm.style.display = uploadForm.style.display === "none" ? "block" : "none";
+    });
+    cancelUploadBtn.addEventListener("click", () => {
+      uploadForm.style.display = "none";
+      uploadMsg.textContent = "";
+    });
+
+    uploadBtn.addEventListener("click", async () => {
+      const file = uploadFile.files[0];
+      const teamId = Number(uploadTeamSelect.value);
+      if (!file) { uploadMsg.textContent = "Choose a .txt or .md file."; return; }
+      if (!teamId) { uploadMsg.textContent = "Choose an opponent."; return; }
+      uploadMsg.textContent = "Uploading…";
+      uploadBtn.disabled = true;
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("team_id", teamId);
+        const res = await authedFetch("/uploads", { method: "POST", body: fd });
+        if (!res) return;
+        if (!res.ok) {
+          const payload = await res.json().catch(() => null);
+          uploadMsg.textContent = errorText(payload, res.status);
+          return;
+        }
+        uploadFile.value = "";
+        uploadForm.style.display = "none";
+        uploadMsg.textContent = "";
+        loadUploads();
+      } catch (err) {
+        uploadMsg.textContent = `Request failed: ${err.message}`;
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+
     function appendBubble(role, content, rejected) {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${role}`;
@@ -413,63 +586,52 @@
       return bubble;
     }
 
+    function applyOriginTag(bubble, origins) {
+      if (!origins || !origins.includes("upload")) return;
+      const tag = document.createElement("div");
+      tag.className = "origin-tag";
+      tag.textContent = "Includes your uploaded notes";
+      bubble.appendChild(tag);
+    }
+
     function renderMessages(messages) {
       messagesBox.innerHTML = "";
-      // The gate verdict lives on the USER row -- it describes how the QUESTION
-      // was processed. So an assistant bubble is a refusal when the user turn
-      // before it was rejected. Track it as we walk.
       let lastUserGate = null;
       for (const m of messages) {
         if (m.role === "user") lastUserGate = m.gate;
         const rejected = m.role === "assistant" && lastUserGate === "reject";
-        appendBubble(m.role, m.content, rejected);
+        const bubble = appendBubble(m.role, m.content, rejected);
+        if (m.role === "assistant") applyOriginTag(bubble, m.origins);
       }
     }
 
     async function openThread(id) {
       const res = await authedFetch(`/conversations/${id}`);
       if (!res) return;
-      if (!res.ok) {
-        // 404: deleted, or never ours. Fall back rather than show a dead view.
-        showEmpty();
-        loadThreads();
-        return;
-      }
-
+      if (!res.ok) { showEmpty(); loadThreads(); return; }
       const conv = await res.json();
       currentConversationId = conv.id;
-      threadTitle.textContent = conv.title ?? "New thread";
+      const title = conv.title ?? "New thread";
+      threadTitle.textContent = title;
       threadTeam.textContent = teamNames[conv.team_id] ?? conv.team_id;
+      setTitle(title);
       renderMessages(conv.messages);
-
       emptyState.style.display = "none";
-      threadView.style.display = "block";
+      threadView.style.display = "flex";
       newThreadForm.style.display = "none";
       loadThreads();
+      scrollMessagesToBottom();
       messageBox.focus();
     }
-
-    newThreadBtn.addEventListener("click", () => {
-      newThreadForm.style.display =
-        newThreadForm.style.display === "none" ? "block" : "none";
-    });
-
-    cancelThreadBtn.addEventListener("click", () => {
-      newThreadForm.style.display = "none";
-    });
 
     createThreadBtn.addEventListener("click", async () => {
       const teamId = Number(teamSelect.value);
       if (!teamId) return;
-
       createThreadBtn.disabled = true;
       try {
         const res = await authedFetch("/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // A select's value is always a string. Convert at the boundary
-          // rather than leaning on Pydantic's coercion -- the int/str
-          // mismatch is exactly what failed silently in the 9b filter.
           body: JSON.stringify({ team_id: teamId }),
         });
         if (!res) return;
@@ -489,56 +651,44 @@
     async function sendMessage() {
       const message = messageBox.value.trim();
       if (!message || !currentConversationId) return;
-
       appendBubble("user", message, false);
       messageBox.value = "";
       sendBtn.disabled = true;
       const pending = appendBubble("assistant", "Thinking…", false);
-
+      scrollMessagesToBottom();
       try {
         const res = await authedFetch("/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: currentConversationId,
-            message: message,
-          }),
+          body: JSON.stringify({ conversation_id: currentConversationId, message: message }),
         });
         if (!res) return;
-
         if (!res.ok) {
           const payload = await res.json().catch(() => null);
           pending.textContent = `Error ${res.status}: ${errorText(payload, res.status)}`;
           pending.classList.add("rejected");
           return;
         }
-
         const data = await res.json();
         pending.textContent = data.response;
-        // /ask returns the gate verdict, so a rejection styles itself without
-        // re-fetching the thread.
+        applyOriginTag(pending, data.origins);
         if (data.gate === "reject") pending.classList.add("rejected");
-        // The first turn sets the thread's title server-side; refresh the
-        // sidebar so it stops saying "New thread".
         loadThreads();
       } catch (err) {
         pending.textContent = `Request failed: ${err.message}`;
         pending.classList.add("rejected");
       } finally {
         sendBtn.disabled = false;
+        scrollMessagesToBottom();
         messageBox.focus();
       }
     }
 
     sendBtn.addEventListener("click", sendMessage);
     messageBox.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     });
 
-    // Decide which panel to show before anything else runs.
     checkAuth();
   </script>
 </body>
