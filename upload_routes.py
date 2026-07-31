@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from auth_routes import require_user
 from data.team_registry import is_tracked
 from models import User
-from rag.uploads import ingest_upload
+from rag.uploads import get_user_collection, ingest_upload
 
 logger = logging.getLogger("igla")
 
@@ -115,3 +115,100 @@ def upload_intel_endpoint(
         original,
     )
     return {**summary, "team_id": team_id}
+
+
+@router.get("", responses={401: {"description": "Not authenticated"}})
+def list_uploads_endpoint(user: User = Depends(require_user)):
+    """List the caller's uploaded notes, grouped by note, newest first.
+
+    One uploaded note becomes several chunks sharing an upload_id. This scans
+    the caller's own collection metadata and folds those chunks back into one
+    summary per note. The chunks ARE the registry, so there is no separate
+    table to keep in sync -- delete a note's chunks and it is gone from this
+    list with nothing left to reconcile.
+
+    Isolation is structural: only get_user_collection(user.id) is opened, so a
+    caller can only ever see their own uploads. There is no user_id filter to
+    forget, and no other user's collection is reachable from here.
+
+    Note the shape of what this can show -- upload_id, source, team_id,
+    uploaded_at, chunk count. All of it lives on the chunks. Anything that does
+    NOT (a file's byte size, an ingest status, a soft-delete audit trail) has
+    no home under this design; that absence is the deliberate trigger to add a
+    Postgres uploads table if such a need ever lands.
+
+    Returns:
+        A list of {"upload_id", "source", "team_id", "uploaded_at", "chunks"},
+        sorted newest first. Empty list when the user has never uploaded, or
+        has deleted every note (the collection persists but scans empty).
+    """
+    collection = get_user_collection(user.id)
+    if collection is None:
+        return []
+
+    result = collection.get(include=["metadatas"])
+
+    notes: dict[str, dict] = {}
+    for meta in result["metadatas"] or []:
+        upload_id = meta["upload_id"]
+        if upload_id not in notes:
+            notes[upload_id] = {
+                "upload_id": upload_id,
+                "source": meta["source"],
+                "team_id": meta["team_id"],
+                "uploaded_at": meta["uploaded_at"],
+                "chunks": 0,
+            }
+        notes[upload_id]["chunks"] += 1
+
+    # uploaded_at is an ISO-8601 UTC string, so a lexicographic sort IS
+    # chronological -- no datetime parsing needed to order newest-first.
+    return sorted(
+        notes.values(), key=lambda note: note["uploaded_at"], reverse=True
+    )
+
+
+@router.delete(
+    "/{upload_id}",
+    status_code=204,
+    responses={
+        401: {"description": "Not authenticated"},
+        404: {"description": "No such upload"},
+    },
+)
+def delete_upload_endpoint(upload_id: str, user: User = Depends(require_user)):
+    """Delete one of the caller's uploaded notes and all its chunks.
+
+    Isolation is structural: only the caller's own collection is opened, so a
+    caller can only ever delete their own note. Another user's collection is
+    never named, so there is no cross-user path from here.
+
+    "Not yours" and "doesn't exist" deliberately collapse to one 404. A caller
+    with no uploads has no collection (get_user_collection returns None); a
+    caller whose collection holds no chunk with this upload_id gets the same
+    answer. Returning 403 for a note owned by someone else would confirm the
+    note exists -- an enumeration signal. 404 leaks nothing.
+
+    ChromaDB's delete(where=...) is a silent no-op when nothing matches: it
+    neither raises nor reports how many rows went. So existence is checked
+    first, and that same read supplies the chunk count for the log. Deleting
+    then inspecting would leave no way to tell "removed a note" from "removed
+    nothing."
+    """
+    collection = get_user_collection(user.id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="No such upload")
+
+    # Only ["ids"] is read; the where-filter matches this note's chunks.
+    matching = collection.get(where={"upload_id": upload_id})
+    chunk_ids = matching["ids"]
+    if not chunk_ids:
+        raise HTTPException(status_code=404, detail="No such upload")
+
+    collection.delete(where={"upload_id": upload_id})
+    logger.info(
+        "Deleted upload id=%s user_id=%s chunks=%s",
+        upload_id,
+        user.id,
+        len(chunk_ids),
+    )
