@@ -10,6 +10,8 @@ confirm the roster with vlr.teams.roster, then append a row. To scale
 to the full VCT scene, see the coverage-expansion guide.
 """
 
+import re
+
 TRACKED_TEAMS = [
     # Americas
     {"team_id": 2, "name": "Sentinels", "region": "Americas"},
@@ -60,6 +62,36 @@ def team_name(team_id: int) -> str:
     (surface it as a 500), not user input to absorb.
     """
     return _TEAM_NAMES[team_id]
+
+
+# Canonical-name lookup and a single compiled matcher, both built once at
+# import so the request path never rebuilds them.
+_NAME_TO_ID = {team["name"].lower(): team["team_id"] for team in TRACKED_TEAMS}
+
+# One alternation over every canonical name, longest-first so a longer name
+# ("Team Liquid") is tried before any shorter alias that lands later. The \b
+# anchors both ends: word-boundary matching now means a short alias like "GE"
+# can't false-match inside "change" once aliases arrive next session.
+_TEAM_PATTERN = re.compile(
+    r"\b(" + "|".join(
+        re.escape(name) for name in sorted(_NAME_TO_ID, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def teams_mentioned(text: str) -> set[int]:
+    """Every tracked team whose canonical name appears in `text`.
+
+    Case-insensitive, word-boundary matched. Returns a set of team_ids,
+    empty when no tracked team is named. The caller resolves the MOVE
+    decision from the count: exactly one -> switch the anchor to it; zero
+    or many -> hold the current anchor.
+    """
+    return {
+        _NAME_TO_ID[match.group(1).lower()]
+        for match in _TEAM_PATTERN.finditer(text)
+    }
 
 
 if __name__ == "__main__":
