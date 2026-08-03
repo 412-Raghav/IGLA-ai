@@ -147,3 +147,51 @@ def test_set_title_truncates_long_message(db, user):
     chat_service.set_title_if_absent(conv.id, "x" * 500, db)
     db.refresh(conv)
     assert len(conv.title) <= 120      # String(120) -- untruncated raises DataError
+
+
+def test_current_anchor_seeds_from_birth_when_no_turns(db, user):
+    conv = chat_service.create_conversation(user.id, 624, db)
+    assert chat_service.get_current_anchor(conv.id, 624, db) == 624
+
+
+def test_current_anchor_reads_last_user_turn_scope(db, user):
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(
+        conv.id, "user", "now compare with Global Esports", db,
+        entity_scope={"team_ids": [918]}, retrieval=PASS,
+    )
+    chat_service.add_message(conv.id, "assistant", "GE breakdown.", db)
+    assert chat_service.get_current_anchor(conv.id, 624, db) == 918
+
+
+def test_current_anchor_follows_most_recent_of_several(db, user):
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(conv.id, "user", "PRX?", db, entity_scope={"team_ids": [624]}, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a", db)
+    chat_service.add_message(conv.id, "user", "now GE", db, entity_scope={"team_ids": [918]}, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a", db)
+    # last-named wins; the id tiebreaker orders rows sharing a frozen created_at
+    assert chat_service.get_current_anchor(conv.id, 624, db) == 918
+
+
+def test_rejected_turn_still_moves_anchor(db, user):
+    """A turn that named a team moved the anchor whether or not it passed the
+    gate -- get_current_anchor reads the last user row regardless of outcome.
+    """
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(
+        conv.id, "user", "now compare with Global Esports", db,
+        entity_scope={"team_ids": [918]}, retrieval=REJECT,
+    )
+    # rejected turn has no assistant reply, but the anchor still moved
+    assert chat_service.get_current_anchor(conv.id, 624, db) == 918
+
+
+def test_current_anchor_falls_back_when_scope_missing(db, user):
+    """Defensive: a user row without a usable team_ids falls back to birth
+    rather than raising -- an unpopulated scope must not break the next turn.
+    """
+    conv = chat_service.create_conversation(user.id, 624, db)
+    chat_service.add_message(conv.id, "user", "q", db, entity_scope=None, retrieval=PASS)
+    chat_service.add_message(conv.id, "assistant", "a", db)
+    assert chat_service.get_current_anchor(conv.id, 624, db) == 624

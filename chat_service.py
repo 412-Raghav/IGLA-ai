@@ -6,6 +6,7 @@ Operations on the `conversations` and `messages` tables:
   get_conversation    -- fetch one thread, ONLY if this user owns it.
   delete_conversation -- remove a thread; messages cascade.
   add_message         -- persist one turn.
+  get_current_anchor  -- the team this thread is currently scoped to.
   get_history         -- assemble the Anthropic messages array.
   set_title_if_absent -- name the thread from its first question.
 
@@ -114,6 +115,39 @@ def add_message(
     db.commit()
     db.refresh(message)
     return message
+
+
+def get_current_anchor(
+    conversation_id: UUID, birth_team_id: int, db: DbSession
+) -> int:
+    """The team this thread is currently scoped to (the MOVE anchor).
+
+    The anchor is whatever team the LAST user turn resolved to, recorded in
+    that turn's entity_scope. Seeded by birth_team_id when the thread has no
+    user turn yet. The last user row is read regardless of gate outcome: a
+    turn that NAMED a team moved the anchor whether or not its retrieval
+    passed, so a rejected turn still carries the scope forward.
+
+    Ordering is (created_at, id) descending -- the id tiebreaker matters
+    because Postgres now() is frozen per transaction, so created_at alone
+    cannot order rows written together.
+    """
+    row = db.execute(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "user",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if row is None or not row.entity_scope:
+        return birth_team_id
+    team_ids = row.entity_scope.get("team_ids")
+    if not team_ids:
+        return birth_team_id
+    return team_ids[0]
 
 
 def _gate_passed(message: Message) -> bool:

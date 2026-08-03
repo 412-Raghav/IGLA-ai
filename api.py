@@ -20,7 +20,7 @@ import chat_service
 from auth_routes import require_user, router as auth_router
 from chat_routes import router as chat_router
 from config import REFRESH_TOKEN, SCOPE_THRESHOLD
-from data.team_registry import TRACKED_TEAMS, team_name
+from data.team_registry import TRACKED_TEAMS, team_name, teams_mentioned
 from db import get_db
 from ingest import (
     has_live_data,
@@ -133,12 +133,21 @@ def ask_endpoint(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Scope stays the thread anchor alone this step. Message-team extraction
-    # (naming a different team mid-thread) changes the where-filter and has no
-    # measurement behind it yet, so it's a separate step. Column shape is
-    # unchanged either way -- no migration when it lands.
-    entity_scope = {"team_ids": [conversation.team_id]}
-    anchor_name = team_name(conversation.team_id)
+    # MOVE re-scope: the anchor is whatever team the last user turn resolved
+    # to -- get_current_anchor derives it from the prior turn's entity_scope,
+    # seeded by the birth team. This turn overrides it ONLY when the message
+    # names exactly one tracked team; zero or several named holds the current
+    # anchor rather than swinging to an arbitrary one (a comparison is not a
+    # switch). entity_scope stores the RESULT, so it becomes the anchor the
+    # next turn derives from -- same {"team_ids": [id]} shape, no migration.
+    current_anchor = chat_service.get_current_anchor(
+        conversation.id, conversation.team_id, db
+    )
+    named = teams_mentioned(ask_request.message)
+    effective_team_id = next(iter(named)) if len(named) == 1 else current_anchor
+
+    entity_scope = {"team_ids": [effective_team_id]}
+    anchor_name = team_name(effective_team_id)
 
     # Both retrieval attempts share one error boundary: a Chroma failure on
     # either maps to 503, and only retrieve_merged can throw inside it (the
@@ -150,7 +159,7 @@ def ask_endpoint(
         # retry -- best_distance must see them at the FIRST gate check, or a
         # note that would have rescued the turn never gets a vote.
         doc_ids, documents, best_distance, origins = retrieve_merged(
-            ask_request.message, conversation.team_id, user.id
+            ask_request.message, effective_team_id, user.id
         )
         gate = "pass" if passes_scope_gate(best_distance) else "reject"
         retrieval_record = [
@@ -181,7 +190,7 @@ def ask_endpoint(
                 conversation.id,
             )
             doc_ids, documents, best_distance, origins = retrieve_merged(
-                rewritten, conversation.team_id, user.id
+                rewritten, effective_team_id, user.id
             )
             gate = "pass" if passes_scope_gate(best_distance) else "reject"
             retrieval_record.append(
