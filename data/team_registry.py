@@ -6,29 +6,31 @@ GC, Youth, or inactive squad. ingest.py loops over this registry to
 scrape live tendencies. The README coverage list is derived from it.
 
 To add a team: resolve its real team_id with vlr.search.search_teams,
-confirm the roster with vlr.teams.roster, then append a row. To scale
-to the full VCT scene, see the coverage-expansion guide.
+confirm the roster with vlr.teams.roster, then append a row. Shorthands
+analysts type ("PRX", "GE") go in the optional `aliases` list and resolve
+to the same team_id as the canonical name. To scale to the full VCT
+scene, see the coverage-expansion guide.
 """
 
 import re
 
 TRACKED_TEAMS = [
     # Americas
-    {"team_id": 2, "name": "Sentinels", "region": "Americas"},
-    {"team_id": 11058, "name": "G2 Esports", "region": "Americas"},
-    {"team_id": 2359, "name": "LEVIATÁN", "region": "Americas"},
+    {"team_id": 2, "name": "Sentinels", "region": "Americas", "aliases": ["SEN"]},
+    {"team_id": 11058, "name": "G2 Esports", "region": "Americas", "aliases": ["G2"]},
+    {"team_id": 2359, "name": "LEVIATÁN", "region": "Americas", "aliases": ["LEV", "Leviatan"]},
     # EMEA
-    {"team_id": 2593, "name": "Fnatic", "region": "EMEA"},
-    {"team_id": 2059, "name": "Team Vitality", "region": "EMEA"},
-    {"team_id": 474, "name": "Team Liquid", "region": "EMEA"},
+    {"team_id": 2593, "name": "Fnatic", "region": "EMEA", "aliases": ["FNC"]},
+    {"team_id": 2059, "name": "Team Vitality", "region": "EMEA", "aliases": ["VIT", "Vitality"]},
+    {"team_id": 474, "name": "Team Liquid", "region": "EMEA", "aliases": ["TL", "Liquid"]},
     # Pacific
-    {"team_id": 624, "name": "Paper Rex", "region": "Pacific"},
-    {"team_id": 918, "name": "Global Esports", "region": "Pacific"},
-    {"team_id": 8185, "name": "DRX", "region": "Pacific"},  # vlr lists as "KIWOOM DRX" (title sponsor)
+    {"team_id": 624, "name": "Paper Rex", "region": "Pacific", "aliases": ["PRX"]},
+    {"team_id": 918, "name": "Global Esports", "region": "Pacific", "aliases": ["GE"]},
+    {"team_id": 8185, "name": "DRX", "region": "Pacific", "aliases": []},  # vlr lists as "KIWOOM DRX" (title sponsor)
     # China
-    {"team_id": 1120, "name": "EDward Gaming", "region": "China"},
-    {"team_id": 13581, "name": "Xi Lai Gaming", "region": "China"},
-    {"team_id": 11328, "name": "FunPlus Phoenix", "region": "China"},
+    {"team_id": 1120, "name": "EDward Gaming", "region": "China", "aliases": ["EDG"]},
+    {"team_id": 13581, "name": "Xi Lai Gaming", "region": "China", "aliases": ["XLG"]},
+    {"team_id": 11328, "name": "FunPlus Phoenix", "region": "China", "aliases": ["FPX"]},
 ]
 
 
@@ -64,14 +66,37 @@ def team_name(team_id: int) -> str:
     return _TEAM_NAMES[team_id]
 
 
-# Canonical-name lookup and a single compiled matcher, both built once at
-# import so the request path never rebuilds them.
-_NAME_TO_ID = {team["name"].lower(): team["team_id"] for team in TRACKED_TEAMS}
+def _build_name_to_id(teams: list[dict]) -> dict[str, int]:
+    """Map every lowercased label (canonical name + aliases) to its team_id.
 
-# One alternation over every canonical name, longest-first so a longer name
-# ("Team Liquid") is tried before any shorter alias that lands later. The \b
-# anchors both ends: word-boundary matching now means a short alias like "GE"
-# can't false-match inside "change" once aliases arrive next session.
+    Runs once at import to build the lookup the matcher reads. A label that
+    resolves to two *different* teams is a registry bug -- a plain dict would
+    silently keep the last one and mis-route a team -- so we raise here instead.
+    A label repeated within one team, or an accent variant landing on the same
+    id ("leviatán"/"leviatan" -> 2359), is harmless and allowed.
+    """
+    mapping: dict[str, int] = {}
+    for team in teams:
+        for label in (team["name"], *team.get("aliases", ())):
+            key = label.lower()
+            existing = mapping.get(key)
+            if existing is not None and existing != team["team_id"]:
+                raise ValueError(
+                    f"registry label collision: {key!r} maps to both "
+                    f"{existing} and {team['team_id']}"
+                )
+            mapping[key] = team["team_id"]
+    return mapping
+
+
+# Canonical + alias lookup and a single compiled matcher, both built once at
+# import so the request path never rebuilds them.
+_NAME_TO_ID = _build_name_to_id(TRACKED_TEAMS)
+
+# One alternation over every label (canonical names + aliases), longest-first
+# so a longer name ("Team Liquid") is tried before a shorter alias ("TL"). The
+# \b anchors both ends: word-boundary matching is why a short alias like "GE"
+# can't false-match inside "change" or "damage".
 _TEAM_PATTERN = re.compile(
     r"\b(" + "|".join(
         re.escape(name) for name in sorted(_NAME_TO_ID, key=len, reverse=True)
