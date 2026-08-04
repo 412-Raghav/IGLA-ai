@@ -123,6 +123,9 @@ def get_conversation_endpoint(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     payload = _serialize_conversation(conversation)
+    payload["current_team_id"] = chat_service.get_current_anchor(
+        conversation.id, conversation.team_id, db
+    )
     payload["messages"] = [_serialize_message(m) for m in conversation.messages]
     return payload
 

@@ -247,6 +247,7 @@ def ask_endpoint(
             "conversation_id": str(conversation.id),
             "gate": gate,
             "origins": [],
+            "team_id": effective_team_id,
         }
 
     try:
@@ -263,6 +264,7 @@ def ask_endpoint(
         "conversation_id": str(conversation.id),
         "gate": gate,
         "origins": origins,
+        "team_id": effective_team_id,
     }
 
 

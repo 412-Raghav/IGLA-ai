@@ -613,7 +613,7 @@
       currentConversationId = conv.id;
       const title = conv.title ?? "New thread";
       threadTitle.textContent = title;
-      threadTeam.textContent = teamNames[conv.team_id] ?? conv.team_id;
+      threadTeam.textContent = teamNames[conv.current_team_id] ?? conv.current_team_id;
       setTitle(title);
       renderMessages(conv.messages);
       emptyState.style.display = "none";
@@ -673,6 +673,7 @@
         pending.textContent = data.response;
         applyOriginTag(pending, data.origins);
         if (data.gate === "reject") pending.classList.add("rejected");
+        if (data.team_id) threadTeam.textContent = teamNames[data.team_id] ?? data.team_id;
         loadThreads();
       } catch (err) {
         pending.textContent = `Request failed: ${err.message}`;
