@@ -82,3 +82,42 @@ def other_user(db):
     db.add(u)
     db.commit()
     return u
+
+
+@pytest.fixture
+def client(db):
+    """A TestClient wired to the savepoint session via dependency_overrides.
+
+    get_db is FastAPI's own seam: overriding it routes EVERY DB access --
+    every route plus require_user -- through the single connection `db` holds
+    inside an open transaction. The app adds only CORSMiddleware (nothing
+    DB-touching), so this one override covers all database access; there is no
+    second connection to escape the savepoint, and the `db` fixture's rollback
+    undoes anything a request committed.
+
+    The override yields `db` WITHOUT closing it -- the `db` fixture owns that
+    connection's teardown; closing here would collapse the savepoint mid-test.
+
+    TestClient(app) is built WITHOUT `with`, so the app's lifespan does not
+    run -- no ingest_static_docs, no ingest_generated_docs, no refresh thread.
+
+    `app` is imported HERE, not at module scope, so the fast service-layer
+    suite never pays for api.py's heavy transitive imports (ingest, rag, the
+    anthropic client). Only a test that asks for `client` loads them.
+
+    dependency_overrides.clear() in teardown resets the override after each
+    test; this fixture is the sole override owner, so clearing is safe.
+    """
+    from fastapi.testclient import TestClient
+
+    from api import app
+    from db import get_db
+
+    def _override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = _override_get_db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
