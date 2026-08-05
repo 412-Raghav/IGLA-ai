@@ -82,6 +82,39 @@ def _serialize_message(message: Message) -> dict:
     }
 
 
+def _serialize_messages(messages: list[Message]) -> list[dict]:
+    """Serialize a thread's turns, forwarding each user turn's served origins
+    onto the assistant reply that answered it.
+
+    origins is persisted on the USER turn's retrieval record (that is where
+    /ask writes it), but the frontend renders the upload badge on the
+    ASSISTANT bubble. On a fresh answer /ask hands origins back on the reply
+    directly; on reload we reconstruct the same pairing here, so the badge
+    survives a refresh. This mirrors how the frontend already carries the
+    gate verdict forward via lastUserGate -- same pairing, other field.
+
+    A user turn contributes origins only when its final attempt PASSED: a
+    rejected turn answers with the canned rejection generated from nothing,
+    so it must advertise no uploads even if attempt 2 retrieved one before
+    the gate bounced it. This matches /ask hardcoding origins=[] on reject.
+    A missing origins key (pre-9d rows) reads as [] rather than raising.
+    """
+    serialized = []
+    pending_origins: list[str] = []
+    for message in messages:
+        record = _serialize_message(message)
+        if message.role == "user":
+            last = message.retrieval[-1] if message.retrieval else None
+            pending_origins = (
+                last.get("origins", []) if last and last.get("gate") == "pass" else []
+            )
+        else:
+            record["origins"] = pending_origins
+            pending_origins = []
+        serialized.append(record)
+    return serialized
+
+
 @router.post("", status_code=201)
 def create_conversation_endpoint(
     new_conversation: NewConversation,
@@ -126,7 +159,7 @@ def get_conversation_endpoint(
     payload["current_team_id"] = chat_service.get_current_anchor(
         conversation.id, conversation.team_id, db
     )
-    payload["messages"] = [_serialize_message(m) for m in conversation.messages]
+    payload["messages"] = _serialize_messages(conversation.messages)
     return payload
 
 
