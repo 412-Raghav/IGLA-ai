@@ -10,9 +10,23 @@ DB seam: the `client` fixture overrides get_db with the savepoint-rolled-back
 session from conftest, so every request -- and require_user -- shares the one
 connection the `db` fixture holds inside an open transaction. Nothing a
 request commits survives teardown.
+
+Mock seam (/ask only): retrieve_merged and ask_igla are patched in the `api`
+namespace -- where /ask looks them up, since api.py imports them by name. This
+fires zero Anthropic calls and lets a test drive the scope gate by choosing
+best_distance: retrieve_merged returns a 4-tuple (ids, documents,
+best_distance, origins), and passes_scope_gate passes when best_distance <=
+SCOPE_THRESHOLD (0.75). passes_scope_gate and format_context are left REAL --
+the gate and the prompt formatter are part of the contract under test.
 """
 
+from unittest.mock import patch
+
+import anthropic
+
 from data.team_registry import TRACKED_TEAMS, TRACKED_TEAM_IDS
+from main import REJECTION_MESSAGE
+from rag.retriever import format_context
 
 # Derived from the registry SSOT, never hardcoded: the first tracked team's id
 # is a valid target, and one past the highest id is guaranteed untracked by
@@ -36,6 +50,15 @@ def _register_and_login(client, username: str, password: str = "testpass123"):
     )
     assert login.status_code == 200
     return reg.json()["id"]
+
+
+def _create_thread(client, team_id: int = TRACKED_TEAM_ID) -> str:
+    """Create a thread as the currently-logged-in user; return its id.
+    Setup for the /ask tests, which need a real conversation to post into.
+    """
+    created = client.post("/conversations", json={"team_id": team_id})
+    assert created.status_code == 201
+    return created.json()["id"]
 
 
 def test_protected_route_rejects_missing_cookie(client):
@@ -186,3 +209,123 @@ def test_malformed_conversation_id_is_422(client):
     not auth."""
     _register_and_login(client, "malformed_user")
     assert client.get("/conversations/not-a-uuid").status_code == 422
+
+
+def test_ask_pass_branch_generates_and_persists(client):
+    """A relevant question: retrieve -> gate PASS -> generate -> persist.
+
+    retrieve_merged is mocked to a low best_distance (0.20 <= 0.75) so the
+    REAL passes_scope_gate passes; ask_igla is mocked to a sentinel answer so
+    no Anthropic call fires. The turn is persisted -- a follow-up GET shows the
+    user question and the assistant sentinel back on the thread.
+    """
+    _register_and_login(client, "ask_pass_user")
+    conversation_id = _create_thread(client)
+
+    documents = ["Paper Rex run a double-controller setup on Split."]
+    with patch(
+        "api.retrieve_merged",
+        return_value=(["doc1"], documents, 0.20, ["corpus"]),
+    ), patch("api.ask_igla", return_value="SENTINEL ANSWER") as mock_ask:
+        resp = client.post(
+            "/ask",
+            json={"conversation_id": conversation_id, "message": "How do PRX defend Split?"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gate"] == "pass"
+    assert body["response"] == "SENTINEL ANSWER"
+    assert body["origins"] == ["corpus"]
+
+    # The REAL format_context ran and its output was threaded into generation:
+    # ask_igla's second positional arg is the formatted block, not raw docs.
+    mock_ask.assert_called_once()
+    assert mock_ask.call_args.args[1] == format_context(documents)
+
+    # The exchange was persisted -- reload shows both turns.
+    reloaded = client.get(f"/conversations/{conversation_id}").json()
+    roles = [m["role"] for m in reloaded["messages"]]
+    contents = [m["content"] for m in reloaded["messages"]]
+    assert roles == ["user", "assistant"]
+    assert "SENTINEL ANSWER" in contents
+
+
+def test_ask_reject_branch_does_not_call_model(client):
+    """An out-of-scope question: gate REJECT on both attempts, no generation.
+
+    retrieve_merged is mocked to a high best_distance (0.95 > 0.75). Because a
+    return_value mock answers every call the same way, BOTH attempt 1 and the
+    anchor-rewrite retry reject, landing in the real reject branch. The
+    assertion that matters: ask_igla is NEVER called -- a rejected turn must
+    not spend a token.
+    """
+    _register_and_login(client, "ask_reject_user")
+    conversation_id = _create_thread(client)
+
+    with patch(
+        "api.retrieve_merged", return_value=([], [], 0.95, [])
+    ), patch("api.ask_igla") as mock_ask:
+        resp = client.post(
+            "/ask",
+            json={"conversation_id": conversation_id, "message": "What is the capital of France?"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gate"] == "reject"
+    assert body["response"] == REJECTION_MESSAGE
+    assert body["origins"] == []
+    mock_ask.assert_not_called()
+
+
+def test_ask_upstream_model_error_is_502(client):
+    """When Claude raises, /ask maps it to 502 -- not an unhandled 500.
+
+    Gate passes (low best_distance) so control reaches generation; ask_igla is
+    mocked to raise anthropic.APIError, and the endpoint's except clause turns
+    it into a clean 502. This proves an upstream failure degrades to a status
+    code instead of leaking a stack trace.
+    """
+    _register_and_login(client, "ask_502_user")
+    conversation_id = _create_thread(client)
+
+    error = anthropic.APIError(
+        message="boom", request=None, body=None
+    )
+    with patch(
+        "api.retrieve_merged",
+        return_value=(["doc1"], ["some intel"], 0.20, ["corpus"]),
+    ), patch("api.ask_igla", side_effect=error):
+        resp = client.post(
+            "/ask",
+            json={"conversation_id": conversation_id, "message": "How do PRX defend Split?"},
+        )
+
+    assert resp.status_code == 502
+
+
+def test_ask_other_users_conversation_is_404(client):
+    """/ask into a thread you don't own is 404 -- ownership on the ask path,
+    same WHERE-clause guarantee as get/delete, checked before any retrieval."""
+    _register_and_login(client, "ask_owner_user")
+    conversation_id = _create_thread(client)
+
+    _register_and_login(client, "ask_intruder_user")
+    resp = client.post(
+        "/ask",
+        json={"conversation_id": conversation_id, "message": "How do PRX defend Split?"},
+    )
+    assert resp.status_code == 404
+
+
+def test_ask_blank_message_is_422(client):
+    """A whitespace-only message fails the AskRequest validator with 422 before
+    retrieval or generation -- a blank question never reaches the pipeline."""
+    _register_and_login(client, "ask_blank_user")
+    conversation_id = _create_thread(client)
+    resp = client.post(
+        "/ask",
+        json={"conversation_id": conversation_id, "message": "   "},
+    )
+    assert resp.status_code == 422
