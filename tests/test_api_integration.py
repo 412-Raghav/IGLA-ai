@@ -20,13 +20,14 @@ SCOPE_THRESHOLD (0.75). passes_scope_gate and format_context are left REAL --
 the gate and the prompt formatter are part of the contract under test.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import anthropic
 
 from data.team_registry import TRACKED_TEAMS, TRACKED_TEAM_IDS
 from main import REJECTION_MESSAGE
 from rag.retriever import format_context
+from upload_routes import MAX_UPLOAD_BYTES
 
 # Derived from the registry SSOT, never hardcoded: the first tracked team's id
 # is a valid target, and one past the highest id is guaranteed untracked by
@@ -329,3 +330,188 @@ def test_ask_blank_message_is_422(client):
         json={"conversation_id": conversation_id, "message": "   "},
     )
     assert resp.status_code == 422
+
+
+# --- /uploads: mocked at the ChromaDB boundary -------------------------------
+# ingest_upload and get_user_collection are patched in the `upload_routes`
+# namespace -- where the route looks them up -- so no test in this group writes
+# to the on-disk chroma_db/. The route's four boundary guards (415/422/413/400)
+# all reject BEFORE ingest_upload, so they need no patch; only the happy path,
+# the empty-note 400, and the list/delete tests touch the (mocked) collection.
+
+
+def test_upload_bad_extension_is_415(client):
+    """Extension is checked first: a .pdf is rejected before team_id, before a
+    byte is read, before ingest -- so a bad type never pays for anything."""
+    _register_and_login(client, "upload_badext_user")
+    resp = client.post(
+        "/uploads",
+        files={"file": ("report.pdf", b"whatever", "application/pdf")},
+        data={"team_id": str(TRACKED_TEAM_ID)},
+    )
+    assert resp.status_code == 415
+
+
+def test_upload_untracked_team_is_422(client):
+    """The hand-written tracked-team guard: an untracked team_id is 422. This
+    guard has no Pydantic validator behind it (form fields don't flow through
+    one), so this test is what proves it still exists."""
+    _register_and_login(client, "upload_untracked_user")
+    resp = client.post(
+        "/uploads",
+        files={"file": ("notes.txt", b"some intel", "text/plain")},
+        data={"team_id": str(UNTRACKED_TEAM_ID)},
+    )
+    assert resp.status_code == 422
+
+
+def test_upload_too_large_is_413(client):
+    """Size is enforced on bytes actually read (one past the cap), not on the
+    client-supplied Content-Length -- so a payload over the limit is 413."""
+    _register_and_login(client, "upload_toobig_user")
+    oversized = b"x" * (MAX_UPLOAD_BYTES + 1)
+    resp = client.post(
+        "/uploads",
+        files={"file": ("big.txt", oversized, "text/plain")},
+        data={"team_id": str(TRACKED_TEAM_ID)},
+    )
+    assert resp.status_code == 413
+
+
+def test_upload_non_utf8_is_400(client):
+    """Bytes that are not valid UTF-8 are a clean 400 at the boundary, not a
+    500 from deep in ingest -- decoding happens here, before ingest_upload."""
+    _register_and_login(client, "upload_baddecode_user")
+    resp = client.post(
+        "/uploads",
+        files={"file": ("bad.txt", b"\xff\xff\xff", "text/plain")},
+        data={"team_id": str(TRACKED_TEAM_ID)},
+    )
+    assert resp.status_code == 400
+
+
+def test_upload_empty_note_is_400(client):
+    """A note that yields zero usable chunks is a 400. ingest_upload is mocked
+    to report chunks=0 (ChromaDB rejects an empty add), and the route turns
+    that into 'no readable text' rather than writing nothing silently."""
+    _register_and_login(client, "upload_empty_user")
+    summary = {"upload_id": "up_empty", "chunks": 0, "source": "blank.txt"}
+    with patch("upload_routes.ingest_upload", return_value=summary):
+        resp = client.post(
+            "/uploads",
+            files={"file": ("blank.txt", b"   ", "text/plain")},
+            data={"team_id": str(TRACKED_TEAM_ID)},
+        )
+    assert resp.status_code == 400
+
+
+def test_upload_happy_path_persists_summary(client):
+    """A valid note: the route decodes the bytes (utf-8-sig) and forwards
+    (user_id, team_id, truncated filename, decoded text) to ingest_upload,
+    then returns the summary plus the echoed team_id. ingest_upload is mocked,
+    so no real embed or disk write happens."""
+    user_id = _register_and_login(client, "upload_happy_user")
+    summary = {"upload_id": "up_happy", "chunks": 3, "source": "prx_notes.txt"}
+    with patch(
+        "upload_routes.ingest_upload", return_value=summary
+    ) as mock_ingest:
+        resp = client.post(
+            "/uploads",
+            files={"file": ("prx_notes.txt", b"Paper Rex play fast.", "text/plain")},
+            data={"team_id": str(TRACKED_TEAM_ID)},
+        )
+
+    assert resp.status_code == 201
+    assert resp.json() == {
+        "upload_id": "up_happy",
+        "chunks": 3,
+        "source": "prx_notes.txt",
+        "team_id": TRACKED_TEAM_ID,
+    }
+    mock_ingest.assert_called_once_with(
+        user_id, TRACKED_TEAM_ID, "prx_notes.txt", "Paper Rex play fast."
+    )
+
+
+def test_upload_unauthenticated_is_401(client):
+    """No session cookie: the require_user guard 401s. The multipart body is
+    spooled before the dependency resolves, but the guard reliably stops ingest
+    -- nothing is written."""
+    resp = client.post(
+        "/uploads",
+        files={"file": ("notes.txt", b"some intel", "text/plain")},
+        data={"team_id": str(TRACKED_TEAM_ID)},
+    )
+    assert resp.status_code == 401
+
+
+def test_list_uploads_empty(client):
+    """A user who has never uploaded has no collection: get_user_collection
+    returns None and the route returns an empty list, not an error."""
+    _register_and_login(client, "list_empty_user")
+    with patch("upload_routes.get_user_collection", return_value=None):
+        resp = client.get("/uploads")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_list_uploads_folds_chunks(client):
+    """One note is several chunks sharing an upload_id; the route folds them
+    back into a single summary with a chunk count. The mocked collection
+    returns two chunks of one note."""
+    _register_and_login(client, "list_notes_user")
+    meta_a = {
+        "upload_id": "abc123",
+        "source": "prx_notes.txt",
+        "team_id": TRACKED_TEAM_ID,
+        "uploaded_at": "2026-08-01T12:00:00+00:00",
+        "chunk_index": 0,
+        "provenance": "user-uploaded",
+    }
+    meta_b = {**meta_a, "chunk_index": 1}
+    fake = MagicMock()
+    fake.get.return_value = {"metadatas": [meta_a, meta_b]}
+
+    with patch("upload_routes.get_user_collection", return_value=fake):
+        resp = client.get("/uploads")
+
+    assert resp.status_code == 200
+    notes = resp.json()
+    assert len(notes) == 1
+    assert notes[0]["upload_id"] == "abc123"
+    assert notes[0]["source"] == "prx_notes.txt"
+    assert notes[0]["team_id"] == TRACKED_TEAM_ID
+    assert notes[0]["chunks"] == 2
+
+
+def test_delete_upload_removes_chunks(client):
+    """Deleting an existing note: the route reads the note's chunks first (to
+    confirm existence and count them), then deletes by upload_id and returns
+    204. Existence is checked before delete because Chroma's delete is a silent
+    no-op on no match."""
+    _register_and_login(client, "delete_ok_user")
+    upload_id = "abc123"
+    fake = MagicMock()
+    fake.get.return_value = {"ids": ["up_abc123_0000", "up_abc123_0001"]}
+
+    with patch("upload_routes.get_user_collection", return_value=fake):
+        resp = client.delete(f"/uploads/{upload_id}")
+
+    assert resp.status_code == 204
+    fake.get.assert_called_once_with(where={"upload_id": upload_id})
+    fake.delete.assert_called_once_with(where={"upload_id": upload_id})
+
+
+def test_delete_absent_upload_is_404(client):
+    """Deleting an upload_id with no matching chunks is 404, never 403 -- 403
+    would confirm the note exists (enumeration). The existence check finds no
+    ids and the route 404s WITHOUT calling delete, so no silent no-op fires."""
+    _register_and_login(client, "delete_absent_user")
+    fake = MagicMock()
+    fake.get.return_value = {"ids": []}
+
+    with patch("upload_routes.get_user_collection", return_value=fake):
+        resp = client.delete("/uploads/does-not-exist")
+
+    assert resp.status_code == 404
+    fake.delete.assert_not_called()
