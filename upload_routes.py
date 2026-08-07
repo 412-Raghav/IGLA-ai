@@ -17,12 +17,13 @@ hand. Omit it and it silently does not exist.
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from auth_routes import require_user
 from data.team_registry import is_tracked
 from models import User
 from rag.uploads import get_user_collection, ingest_upload
+from rate_limit import limiter
 
 logger = logging.getLogger("igla")
 
@@ -46,7 +47,9 @@ UPLOAD_RESPONSES = {
 
 
 @router.post("", status_code=201, responses=UPLOAD_RESPONSES)
+@limiter.limit("5/minute")
 def upload_intel_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     team_id: int = Form(...),
     user: User = Depends(require_user),

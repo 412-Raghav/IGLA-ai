@@ -20,6 +20,8 @@ SCOPE_THRESHOLD (0.75). passes_scope_gate and format_context are left REAL --
 the gate and the prompt formatter are part of the contract under test.
 """
 
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import anthropic
@@ -66,6 +68,40 @@ def _create_thread(client, team_id: int = TRACKED_TEAM_ID) -> str:
     created = client.post("/conversations", json={"team_id": team_id})
     assert created.status_code == 201
     return created.json()["id"]
+
+
+@pytest.fixture(autouse=True)
+def _limiter_disabled():
+    """Disable the IP rate limiter for every test in this module by default.
+
+    slowapi's in-memory counter lives for the process and keys on the fixed
+    'testclient' address, so an enabled limiter would let one test's request
+    count bleed into the next. Disabled, the decorator is a pass-through that
+    never touches the store: the ordinary tests stay hermetic, and the two that
+    assert a 429 opt back in via `rate_limited`. No existing test asserts a 429,
+    so disabling changes none of them -- it only removes their latent coupling.
+    """
+    from api import limiter
+
+    limiter.enabled = False
+    yield
+
+
+@pytest.fixture
+def rate_limited(_limiter_disabled):
+    """Enable the limiter for one test, then disable it again.
+
+    Depends on `_limiter_disabled` so ordering is fixed: disabled runs first,
+    then this flips it on. Only one test per endpoint enables the limiter, so
+    each 429 test's counter starts at zero with no reset -- a disabled limiter
+    never incremented it. Teardown restores the module default so the next
+    test's autouse sees a clean slate regardless of run order.
+    """
+    from api import limiter
+
+    limiter.enabled = True
+    yield
+    limiter.enabled = False
 
 
 def test_protected_route_rejects_missing_cookie(client):
@@ -521,3 +557,139 @@ def test_delete_absent_upload_is_404(client):
 
     assert resp.status_code == 404
     fake.delete.assert_not_called()
+
+
+# --- rate limiting + /refresh single-flight ----------------------------------
+# The limiter is disabled by default (autouse _limiter_disabled); the two 429
+# tests opt in via `rate_limited`. REFRESH_TOKEN is patched to a known value so
+# the token check never depends on the .env, and _trigger_refresh (or
+# refresh_live_data) is patched so no real scrape thread or network call fires.
+
+REFRESH_TOKEN_VALUE = "test-refresh-token"
+
+
+def test_upload_rate_limit_returns_429_past_the_cap(client, rate_limited):
+    """The sixth upload inside the window is 429; the first five are 201.
+
+    ingest_upload is mocked so the five accepted uploads do no real embedding.
+    The limiter check runs in the endpoint wrapper -- ahead of the body's own
+    guards -- so the over-limit request is rejected without touching ingest.
+    """
+    _register_and_login(client, "upload_ratelimit_user")
+    summary = {"upload_id": "up_rl", "chunks": 1, "source": "note.txt"}
+    with patch("upload_routes.ingest_upload", return_value=summary):
+        statuses = [
+            client.post(
+                "/uploads",
+                files={"file": ("note.txt", b"some intel", "text/plain")},
+                data={"team_id": str(TRACKED_TEAM_ID)},
+            ).status_code
+            for _ in range(6)
+        ]
+
+    assert statuses[:5] == [201, 201, 201, 201, 201]
+    assert statuses[5] == 429
+
+
+def test_refresh_valid_token_is_202(client):
+    """A valid refresh token starts a refresh and returns 202.
+
+    _trigger_refresh is patched to report it started one (True); the endpoint
+    maps that to 202. Patching the trigger -- not refresh_live_data -- means no
+    real worker thread spawns, so this test cannot leak the in-progress flag
+    into the direct single-flight test.
+    """
+    with patch("api.REFRESH_TOKEN", REFRESH_TOKEN_VALUE), patch(
+        "api._trigger_refresh", return_value=True
+    ):
+        resp = client.post(
+            "/refresh", headers={"X-Refresh-Token": REFRESH_TOKEN_VALUE}
+        )
+    assert resp.status_code == 202
+
+
+def test_refresh_wrong_token_is_401(client):
+    """A wrong token and a missing token are both 401, and start no refresh.
+
+    refresh_live_data is patched (it exists before and after the rewrite) and
+    asserted uncalled -- the token check short-circuits before any trigger, so
+    an unauthorized caller never reaches the refresh path.
+    """
+    with patch("api.REFRESH_TOKEN", REFRESH_TOKEN_VALUE), patch(
+        "api.refresh_live_data"
+    ) as mock_refresh:
+        wrong = client.post(
+            "/refresh", headers={"X-Refresh-Token": "not-the-token"}
+        )
+        missing = client.post("/refresh")
+
+    assert wrong.status_code == 401
+    assert missing.status_code == 401
+    mock_refresh.assert_not_called()
+
+
+def test_refresh_already_running_is_409(client):
+    """A valid trigger while a refresh is already in flight is 409.
+
+    _trigger_refresh is patched to report False (already running); the endpoint
+    must map that to 409 -- distinct from 202 (started) and 429 (too frequent).
+    """
+    with patch("api.REFRESH_TOKEN", REFRESH_TOKEN_VALUE), patch(
+        "api._trigger_refresh", return_value=False
+    ):
+        resp = client.post(
+            "/refresh", headers={"X-Refresh-Token": REFRESH_TOKEN_VALUE}
+        )
+    assert resp.status_code == 409
+
+
+def test_refresh_rate_limit_returns_429_past_the_cap(client, rate_limited):
+    """The fourth refresh inside the window is 429; the first three are 202.
+
+    _trigger_refresh is patched to True so single-flight never interferes --
+    this isolates the rate-limit decorator. The limiter check precedes the
+    token check and the trigger, so the over-limit request is rejected first.
+    """
+    with patch("api.REFRESH_TOKEN", REFRESH_TOKEN_VALUE), patch(
+        "api._trigger_refresh", return_value=True
+    ):
+        statuses = [
+            client.post(
+                "/refresh", headers={"X-Refresh-Token": REFRESH_TOKEN_VALUE}
+            ).status_code
+            for _ in range(4)
+        ]
+
+    assert statuses[:3] == [202, 202, 202]
+    assert statuses[3] == 429
+
+
+def test_trigger_refresh_is_single_flight():
+    """The concurrency guard directly: a second trigger while one runs is False.
+
+    refresh_live_data is patched to block on an Event so the first refresh stays
+    in flight. The first _trigger_refresh starts it and returns True; the
+    second, with the flag still set, declines and returns False. Releasing the
+    worker lets it finish and clear the flag. This proves single-flight without
+    the HTTP layer's threadpool timing, and asserts the flag resets on
+    completion.
+    """
+    import api
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_refresh():
+        started.set()
+        release.wait(timeout=5)
+
+    with patch("api.refresh_live_data", blocking_refresh):
+        assert api._trigger_refresh() is True
+        assert started.wait(timeout=2)
+        assert api._trigger_refresh() is False
+        release.set()
+
+        deadline = time.monotonic() + 2
+        while api._refresh_in_progress and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert api._refresh_in_progress is False

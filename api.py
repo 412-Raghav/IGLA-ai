@@ -11,9 +11,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session as DbSession
 
 import chat_service
@@ -31,6 +30,7 @@ from ingest import (
 from main import REJECTION_MESSAGE, ask_igla
 from models import User
 from rag.retriever import format_context, passes_scope_gate, retrieve_merged
+from rate_limit import limiter
 from upload_routes import router as upload_router
 
 # The app owns root-logger config; library modules must not touch it. main.py
@@ -46,10 +46,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("igla")
 
-# Rate limiter keyed on client IP. In-memory store: counts reset on restart
-# and are per-replica — fine for a single replica; Redis is the multi-replica
-# upgrade path.
-limiter = Limiter(key_func=get_remote_address)
+
+# Single-flight refresh: refresh_live_data rewrites the SHARED corpus, so two
+# runs at once would double-write it. A refresh takes minutes; a rate limit
+# bounds how OFTEN a trigger fires but not whether one is already running, so
+# frequency and concurrency are separate guards. This flag, under a short-lived
+# lock, is the concurrency half. Both the lifespan startup and the /refresh
+# endpoint go through _trigger_refresh, so neither can stampede the other.
+_refresh_lock = threading.Lock()
+_refresh_in_progress = False
+
+
+def _trigger_refresh() -> bool:
+    """Start a refresh unless one is already running.
+
+    Returns True if this call started the refresh, False if one was already in
+    flight. The lock guards ONLY the flag read-and-set -- never the refresh
+    itself, which runs on a daemon thread outside the critical section, so a
+    minutes-long scrape never holds the lock. The worker clears the flag in a
+    finally block, so a refresh that raises still frees the next trigger.
+    """
+    global _refresh_in_progress
+    with _refresh_lock:
+        if _refresh_in_progress:
+            return False
+        _refresh_in_progress = True
+
+    def _worker():
+        global _refresh_in_progress
+        try:
+            refresh_live_data()
+        finally:
+            with _refresh_lock:
+                _refresh_in_progress = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
 @asynccontextmanager
@@ -59,7 +91,7 @@ async def lifespan(app: FastAPI):
 
     if not has_live_data():
         logger.info("No live data on startup; running an immediate refresh.")
-        threading.Thread(target=refresh_live_data, daemon=True).start()
+        _trigger_refresh()
 
     yield
 
@@ -271,9 +303,14 @@ def ask_endpoint(
 @app.post(
     "/refresh",
     status_code=202,
-    responses={401: {"description": "Missing or invalid refresh token"}},
+    responses={
+        401: {"description": "Missing or invalid refresh token"},
+        409: {"description": "A refresh is already running"},
+        429: {"description": "Too many refresh requests"},
+    },
 )
-def refresh_endpoint(x_refresh_token: str | None = Header(None)):
+@limiter.limit("3/minute")
+def refresh_endpoint(request: Request, x_refresh_token: str | None = Header(None)):
     if (
         not REFRESH_TOKEN
         or not x_refresh_token
@@ -281,8 +318,11 @@ def refresh_endpoint(x_refresh_token: str | None = Header(None)):
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    if not _trigger_refresh():
+        logger.info("Refresh requested but one is already running; returning 409.")
+        raise HTTPException(status_code=409, detail="A refresh is already running")
+
     logger.info("Authorized refresh triggered; starting in background.")
-    threading.Thread(target=refresh_live_data, daemon=True).start()
     return {"status": "refresh started"}
 
 
