@@ -23,11 +23,17 @@ the gate and the prompt formatter are part of the contract under test.
 from unittest.mock import MagicMock, patch
 
 import anthropic
+import pytest
 
 from data.team_registry import TRACKED_TEAMS, TRACKED_TEAM_IDS
 from main import REJECTION_MESSAGE
 from rag.retriever import format_context
 from upload_routes import MAX_UPLOAD_BYTES
+
+# Every test in this module drives the app through TestClient, which imports
+# api.py and its heavy transitive graph. Marking the whole module lets
+# `pytest -m "not integration"` skip that import and run the fast unit loop.
+pytestmark = pytest.mark.integration
 
 # Derived from the registry SSOT, never hardcoded: the first tracked team's id
 # is a valid target, and one past the highest id is guaranteed untracked by
