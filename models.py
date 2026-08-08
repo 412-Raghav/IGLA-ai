@@ -33,6 +33,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -142,3 +143,41 @@ class Message(Base):
     )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class TeamInstruction(Base):
+    """One analyst's standing instruction for one opponent.
+
+    Keyed (user_id, team_id) with a UNIQUE constraint: a team instruction is a
+    current-state object, not an event log, so there is exactly one live row
+    per (user, team) and a second write REPLACES it (upsert) rather than
+    appending. The uniqueness is enforced here, in the schema -- the every-turn
+    read is then a point lookup with no "which row is latest" ambiguity, and
+    the frozen-now() tiebreaker that get_current_anchor/get_history carry does
+    not arise. See docs/phase-10-instructions-design.md.
+
+    instructions_text is String(2000); the API rejects over-length input rather
+    than truncating (an instruction is load-bearing, unlike a conversation
+    title). MAX_INSTRUCTION_CHARS in instruction_service mirrors this width.
+    """
+
+    __tablename__ = "team_instructions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "team_id", name="uq_team_instructions_user_team"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    team_id: Mapped[int] = mapped_column(nullable=False)
+    instructions_text: Mapped[str] = mapped_column(String(2000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
