@@ -142,6 +142,27 @@
     .composer-wrap { flex-shrink: 0; border-top: 1px solid #2a2d35; padding: 12px 20px; }
     .composer-row { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
     .composer-row button { flex-shrink: 0; }
+    /* ---------- TEAM-INSTRUCTIONS MODAL ---------- */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .modal-card {
+      width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto;
+      background: #20242c; border: 1px solid #2f333b; border-radius: 14px;
+      padding: 18px 24px 22px;
+    }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; }
+    .modal-title { font-size: 1.15rem; font-weight: 600; }
+    #instr-text { min-height: 150px; max-height: 45vh; }
+    .instr-counter { text-align: right; color: #666; font-size: 0.8rem; margin-top: 6px; }
+    .instr-counter.over { color: #e0777c; }
+    #instr-msg { min-height: 16px; margin-top: 8px; color: #e0777c; font-size: 0.8rem; }
+    .modal-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+    .modal-foot-right { display: flex; gap: 10px; }
+    button.danger { background: transparent; border: 1px solid #3a2a2e; color: #e0777c; }
+    button.danger:hover { background: #2c1a1c; }
   </style>
 </head>
 <body>
@@ -225,6 +246,11 @@
           </div>
           <div id="note-list"></div>
         </div>
+
+        <div class="expanded-only">
+          <div class="sidebar-label">Team instructions</div>
+          <button id="sidebar-instr-btn" class="full secondary small">+ Team instructions</button>
+        </div>
       </div>
 
       <div class="sidebar-bottom">
@@ -244,7 +270,13 @@
       <div id="thread-view" style="display: none;">
         <div id="thread-header">
           <span id="thread-title"></span>
-          <span id="thread-team" class="badge"></span>
+          <span style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+            <button id="thread-instr-btn" class="small secondary" style="display: inline-flex; align-items: center; gap: 6px;">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              Instructions
+            </button>
+            <span id="thread-team" class="badge"></span>
+          </span>
         </div>
         <div id="messages-scroll">
           <div id="messages"></div>
@@ -257,6 +289,32 @@
         </div>
       </div>
     </main>
+
+    <div id="instr-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card">
+        <div class="modal-head">
+          <span class="modal-title">Team instructions</span>
+          <button id="instr-close" class="icon-btn" title="Close" aria-label="Close">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <label for="instr-team">Opponent</label>
+        <select id="instr-team" disabled>
+          <option value="">Loading teams…</option>
+        </select>
+        <label for="instr-text">Instruction</label>
+        <textarea id="instr-text" placeholder="Standing guidance for this opponent — applied to every answer in their threads."></textarea>
+        <div id="instr-counter" class="instr-counter"><span id="instr-count">0</span> / 2000</div>
+        <div id="instr-msg"></div>
+        <div class="modal-foot">
+          <button id="instr-clear" class="danger">Clear</button>
+          <span class="modal-foot-right">
+            <button id="instr-cancel" class="secondary">Cancel</button>
+            <button id="instr-save">Save</button>
+          </span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -307,7 +365,22 @@
     const sendBtn = document.getElementById("send-btn");
 
     let currentConversationId = null;
+    let currentAnchorTeamId = null;
     const teamNames = {};
+
+    // Team-instructions modal
+    const instrModal = document.getElementById("instr-modal");
+    const instrTeamSelect = document.getElementById("instr-team");
+    const instrText = document.getElementById("instr-text");
+    const instrCount = document.getElementById("instr-count");
+    const instrCounter = document.getElementById("instr-counter");
+    const instrMsg = document.getElementById("instr-msg");
+    const instrSaveBtn = document.getElementById("instr-save");
+    const instrClearBtn = document.getElementById("instr-clear");
+    const instrCancelBtn = document.getElementById("instr-cancel");
+    const instrCloseBtn = document.getElementById("instr-close");
+    const sidebarInstrBtn = document.getElementById("sidebar-instr-btn");
+    const threadInstrBtn = document.getElementById("thread-instr-btn");
 
     // --- Sidebar collapse (persisted; index.html is a real page, so localStorage is fine) ---
     function setCollapsed(collapsed) {
@@ -381,6 +454,7 @@
       threadView.style.display = "none";
       emptyState.style.display = "flex";
       currentConversationId = null;
+      currentAnchorTeamId = null;
       setTitle(null);
     }
 
@@ -446,6 +520,7 @@
         const data = await res.json();
         teamSelect.innerHTML = "";
         uploadTeamSelect.innerHTML = "";
+        instrTeamSelect.innerHTML = '<option value="">Choose an opponent…</option>';
         for (const team of data.teams) {
           teamNames[team.team_id] = team.name;
           const label = `${team.name} — ${team.region}`;
@@ -453,12 +528,16 @@
           t.value = team.team_id; t.textContent = label; teamSelect.appendChild(t);
           const u = document.createElement("option");
           u.value = team.team_id; u.textContent = label; uploadTeamSelect.appendChild(u);
+          const n = document.createElement("option");
+          n.value = team.team_id; n.textContent = label; instrTeamSelect.appendChild(n);
         }
         teamSelect.disabled = false;
         uploadTeamSelect.disabled = false;
+        instrTeamSelect.disabled = false;
       } catch (err) {
         teamSelect.innerHTML = '<option value="">Unavailable</option>';
         uploadTeamSelect.innerHTML = '<option value="">Unavailable</option>';
+        instrTeamSelect.innerHTML = '<option value="">Unavailable</option>';
       }
     }
 
@@ -614,6 +693,7 @@
       const title = conv.title ?? "New thread";
       threadTitle.textContent = title;
       threadTeam.textContent = teamNames[conv.current_team_id] ?? conv.current_team_id;
+      currentAnchorTeamId = conv.current_team_id;
       setTitle(title);
       renderMessages(conv.messages);
       emptyState.style.display = "none";
@@ -673,7 +753,10 @@
         pending.textContent = data.response;
         applyOriginTag(pending, data.origins);
         if (data.gate === "reject") pending.classList.add("rejected");
-        if (data.team_id) threadTeam.textContent = teamNames[data.team_id] ?? data.team_id;
+        if (data.team_id) {
+          threadTeam.textContent = teamNames[data.team_id] ?? data.team_id;
+          currentAnchorTeamId = data.team_id;
+        }
         loadThreads();
       } catch (err) {
         pending.textContent = `Request failed: ${err.message}`;
@@ -688,6 +771,102 @@
     sendBtn.addEventListener("click", sendMessage);
     messageBox.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+
+    // --- Team-instructions modal (opened from the sidebar or the thread header) ---
+    function updateInstrCounter() {
+      const n = instrText.value.length;
+      instrCount.textContent = n;
+      instrCounter.classList.toggle("over", n > 2000);
+    }
+
+    async function loadInstruction(teamId) {
+      instrText.value = "";
+      instrMsg.textContent = "";
+      updateInstrCounter();
+      if (!teamId) return; // no opponent chosen yet -> empty editor
+      const res = await authedFetch(`/instructions/${teamId}`);
+      if (!res || !res.ok) return;
+      const data = await res.json();
+      instrText.value = data.instructions_text || "";
+      updateInstrCounter();
+    }
+
+    function openInstrModal(teamId) {
+      instrMsg.textContent = "";
+      instrTeamSelect.value = teamId ? String(teamId) : "";
+      instrModal.style.display = "flex";
+      loadInstruction(teamId);
+      instrText.focus();
+    }
+
+    function closeInstrModal() { instrModal.style.display = "none"; }
+
+    instrText.addEventListener("input", updateInstrCounter);
+    instrTeamSelect.addEventListener("change", () =>
+      loadInstruction(Number(instrTeamSelect.value))
+    );
+
+    sidebarInstrBtn.addEventListener("click", () => {
+      if (sidebar.classList.contains("collapsed")) expandSidebar();
+      openInstrModal(null); // sidebar: pick any opponent
+    });
+    threadInstrBtn.addEventListener("click", () => openInstrModal(currentAnchorTeamId));
+
+    instrCloseBtn.addEventListener("click", closeInstrModal);
+    instrCancelBtn.addEventListener("click", closeInstrModal);
+    instrModal.addEventListener("click", (e) => {
+      if (e.target === instrModal) closeInstrModal(); // click the backdrop to close
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && instrModal.style.display === "flex") closeInstrModal();
+    });
+
+    instrSaveBtn.addEventListener("click", async () => {
+      const teamId = Number(instrTeamSelect.value);
+      if (!teamId) { instrMsg.textContent = "Choose an opponent."; return; }
+      const text = instrText.value.trim();
+      if (!text) { instrMsg.textContent = "Instruction must not be blank."; return; }
+      instrMsg.textContent = "";
+      instrSaveBtn.disabled = true;
+      try {
+        const res = await authedFetch(`/instructions/${teamId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instructions_text: text }),
+        });
+        if (!res) return;
+        if (!res.ok) {
+          const payload = await res.json().catch(() => null);
+          instrMsg.textContent = errorText(payload, res.status);
+          return;
+        }
+        closeInstrModal();
+      } catch (err) {
+        instrMsg.textContent = `Request failed: ${err.message}`;
+      } finally {
+        instrSaveBtn.disabled = false;
+      }
+    });
+
+    instrClearBtn.addEventListener("click", async () => {
+      const teamId = Number(instrTeamSelect.value);
+      if (!teamId) { instrMsg.textContent = "Choose an opponent."; return; }
+      if (instrText.value.trim() && !confirm("Clear this opponent's instruction?")) return;
+      instrMsg.textContent = "";
+      instrClearBtn.disabled = true;
+      try {
+        // 204 removed or 404 nothing-to-remove: both end at "cleared".
+        const res = await authedFetch(`/instructions/${teamId}`, { method: "DELETE" });
+        if (!res) return;
+        instrText.value = "";
+        updateInstrCounter();
+        closeInstrModal();
+      } catch (err) {
+        instrMsg.textContent = `Request failed: ${err.message}`;
+      } finally {
+        instrClearBtn.disabled = false;
+      }
     });
 
     checkAuth();
