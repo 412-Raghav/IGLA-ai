@@ -374,6 +374,74 @@ def test_ask_blank_message_is_422(client):
     assert resp.status_code == 422
 
 
+def test_ask_injects_team_instruction_and_audits_it(client, db):
+    """An instruction set for the anchor team is (a) threaded into ask_igla as
+    its fourth argument, and (b) recorded in the user turn's entity_scope as
+    the audit key. PUT via the real route, drive a passing /ask, then read the
+    persisted row directly -- entity_scope is not exposed over HTTP, so the
+    audit is verified against the DB, through the same savepoint connection.
+    """
+    from models import Message
+
+    _register_and_login(client, "ask_instr_user")
+    conversation_id = _create_thread(client)
+
+    instruction = "Weight answers toward their aggressive early-round tendencies."
+    assert client.put(
+        f"/instructions/{TRACKED_TEAM_ID}",
+        json={"instructions_text": instruction},
+    ).status_code == 200
+
+    with patch(
+        "api.retrieve_merged",
+        return_value=(["doc1"], ["some intel"], 0.20, ["corpus"]),
+    ), patch("api.ask_igla", return_value="SENTINEL") as mock_ask:
+        resp = client.post(
+            "/ask",
+            json={"conversation_id": conversation_id, "message": "How do they defend Split?"},
+        )
+
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    assert mock_ask.call_args.args[3] == instruction  # threaded into generation
+
+    # audit: the user turn's entity_scope carries {"team_id", "chars"}
+    from uuid import UUID
+    user_turn = (
+        db.query(Message)
+        .filter_by(conversation_id=UUID(conversation_id), role="user")
+        .one()
+    )
+    assert user_turn.entity_scope["instruction"] == {
+        "team_id": TRACKED_TEAM_ID,
+        "chars": len(instruction),
+    }
+    assert user_turn.entity_scope["team_ids"] == [TRACKED_TEAM_ID]  # unchanged
+
+
+def test_ask_without_instruction_passes_empty_string(client):
+    """A thread whose anchor team has no instruction calls ask_igla with "" --
+    the no-instruction path stays byte-identical, proven at the wire, not just
+    in _compose_system. This is the /ask-level twin of
+    test_compose_without_instruction_is_unchanged.
+    """
+    _register_and_login(client, "ask_no_instr_user")
+    conversation_id = _create_thread(client)
+
+    with patch(
+        "api.retrieve_merged",
+        return_value=(["doc1"], ["some intel"], 0.20, ["corpus"]),
+    ), patch("api.ask_igla", return_value="SENTINEL") as mock_ask:
+        resp = client.post(
+            "/ask",
+            json={"conversation_id": conversation_id, "message": "How do they defend Split?"},
+        )
+
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    assert mock_ask.call_args.args[3] == ""
+
+
 # --- /uploads: mocked at the ChromaDB boundary -------------------------------
 # ingest_upload and get_user_collection are patched in the `upload_routes`
 # namespace -- where the route looks them up -- so no test in this group writes
@@ -693,3 +761,5 @@ def test_trigger_refresh_is_single_flight():
         while api._refresh_in_progress and time.monotonic() < deadline:
             time.sleep(0.01)
         assert api._refresh_in_progress is False
+
+

@@ -16,6 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session as DbSession
 
 import chat_service
+import instruction_service
 from auth_routes import require_user, router as auth_router
 from chat_routes import router as chat_router
 from instruction_routes import router as instruction_router
@@ -179,8 +180,18 @@ def ask_endpoint(
     )
     named = teams_mentioned(ask_request.message)
     effective_team_id = next(iter(named)) if len(named) == 1 else current_anchor
+    team_instructions = instruction_service.get_instruction(
+        user.id, effective_team_id, db
+    )
 
-    entity_scope = {"team_ids": [effective_team_id]}
+    entity_scope = {
+        "team_ids": [effective_team_id],
+        "instruction": (
+            {"team_id": effective_team_id, "chars": len(team_instructions)}
+            if team_instructions
+            else None
+        ),
+    }
     anchor_name = team_name(effective_team_id)
 
     # Both retrieval attempts share one error boundary: a Chroma failure on
@@ -286,7 +297,10 @@ def ask_endpoint(
 
     try:
         answer = ask_igla(
-            ask_request.message, format_context(documents), history
+            ask_request.message,
+            format_context(documents),
+            history,
+            team_instructions or "",
         )
     except anthropic.APIError:
         logger.exception("Generation failed (conversation_id=%s)", conversation.id)
