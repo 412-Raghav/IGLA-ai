@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session as DbSession
 import chat_service
 from auth_routes import require_user, router as auth_router
 from chat_routes import router as chat_router
+from instruction_routes import router as instruction_router
 from config import REFRESH_TOKEN, SCOPE_THRESHOLD
 from data.team_registry import TRACKED_TEAMS, team_name, teams_mentioned
 from db import get_db
@@ -110,6 +111,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(upload_router)
+app.include_router(instruction_router)
 
 
 # Wire the limiter into the app and register the 429 handler.
