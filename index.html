@@ -639,6 +639,25 @@
       uploadMsg.textContent = "";
     });
 
+    // --- Dismiss the sidebar popover forms on an outside click or Escape, the
+    //     way the instructions modal already does. The document-level listener
+    //     also gives sibling-close for free (opening one form is an "outside
+    //     click" for the other), so the toggle handlers above stay unchanged. ---
+    function hideNewThreadForm() { newThreadForm.style.display = "none"; }
+    function hideUploadForm() { uploadForm.style.display = "none"; uploadMsg.textContent = ""; }
+
+    document.addEventListener("click", (e) => {
+      if (!newThreadForm.contains(e.target) && !newThreadBtn.contains(e.target)) hideNewThreadForm();
+      if (!uploadForm.contains(e.target) && !addNoteBtn.contains(e.target)) hideUploadForm();
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && instrModal.style.display !== "flex") {
+        hideNewThreadForm();
+        hideUploadForm();
+      }
+    });
+
     uploadBtn.addEventListener("click", async () => {
       const file = uploadFile.files[0];
       const teamId = Number(uploadTeamSelect.value);
