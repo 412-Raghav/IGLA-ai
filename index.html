@@ -160,6 +160,9 @@
     /* ---------- MAIN ---------- */
     #main { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; }
     #empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+    #empty-state { flex-direction: column; gap: 6px; text-align: center; padding: 24px; }
+    .empty-greeting { color: var(--text); font-size: 1.05rem; }
+    .empty-hint { color: var(--text-dim); font-size: 0.9rem; }
     #thread-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     #thread-header {
       flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
@@ -414,6 +417,7 @@
 
     let currentConversationId = null;
     let currentAnchorTeamId = null;
+    let currentUsername = "";
     const teamNames = {};
 
     // Team-instructions modal
@@ -483,6 +487,7 @@
     function showApp(username) {
       loginPanel.style.display = "none";
       appPanel.style.display = "flex";
+      currentUsername = username;
       whoami.textContent = username;
       restoreSidebar();
       loadTeams();
@@ -499,6 +504,16 @@
     }
 
     function showEmpty() {
+      emptyState.textContent = "";
+      const greeting = document.createElement("div");
+      greeting.className = "empty-greeting";
+      greeting.textContent = currentUsername
+        ? `Ready when you are, ${currentUsername}.`
+        : "Ready when you are.";
+      const hint = document.createElement("div");
+      hint.className = "empty-hint";
+      hint.textContent = "Pick a thread, or start a new one.";
+      emptyState.append(greeting, hint);
       threadView.style.display = "none";
       emptyState.style.display = "flex";
       currentConversationId = null;
@@ -854,6 +869,10 @@
       currentAnchorTeamId = conv.current_team_id;
       setTitle(title);
       renderMessages(conv.messages);
+      const teamLabel = teamNames[conv.current_team_id] ?? "this opponent";
+      messageBox.placeholder = conv.messages.length
+        ? "Ask a follow-up… (Enter to send)"
+        : `Ask about ${teamLabel}…`;
       emptyState.style.display = "none";
       threadView.style.display = "flex";
       newThreadForm.style.display = "none";
