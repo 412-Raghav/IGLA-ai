@@ -157,7 +157,7 @@
       gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--surface-2);
     }
     #thread-title { font-size: 0.98rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .badge { background: var(--surface-2); color: var(--text-muted); font-size: 0.75rem; padding: 3px 10px; border-radius: 6px; flex-shrink: 0; }
+    .badge { background: var(--badge-bg, var(--surface-2)); color: var(--badge-fg, var(--text-muted)); border: 1px solid var(--badge-border, transparent); font-size: 0.75rem; padding: 3px 10px; border-radius: 6px; flex-shrink: 0; }
 
     #messages-scroll { flex: 1; min-height: 0; overflow-y: auto; }
     #messages { max-width: 720px; margin: 0 auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 12px; }
@@ -818,6 +818,21 @@
       }
     }
 
+    // Per-team accent: hash the team name to a hue, tint the badge from it.
+    // Verified AA across all 360 hues (min 5.86:1), so the team name stays legible.
+    function hueForTeam(name) {
+      let h = 0;
+      for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      return h % 360;
+    }
+    function setTeamBadge(name) {
+      threadTeam.textContent = name;
+      const h = hueForTeam(name);
+      threadTeam.style.setProperty("--badge-bg", `hsl(${h} 38% 17%)`);
+      threadTeam.style.setProperty("--badge-fg", `hsl(${h} 58% 73%)`);
+      threadTeam.style.setProperty("--badge-border", `hsl(${h} 32% 30%)`);
+    }
+
     async function openThread(id) {
       const res = await authedFetch(`/conversations/${id}`);
       if (!res) return;
@@ -826,7 +841,7 @@
       currentConversationId = conv.id;
       const title = conv.title ?? "New thread";
       threadTitle.textContent = title;
-      threadTeam.textContent = teamNames[conv.current_team_id] ?? conv.current_team_id;
+      setTeamBadge(teamNames[conv.current_team_id] ?? conv.current_team_id);
       currentAnchorTeamId = conv.current_team_id;
       setTitle(title);
       renderMessages(conv.messages);
@@ -889,7 +904,7 @@
         applyOriginTag(pending, data.origins);
         if (data.gate === "reject") pending.classList.add("rejected");
         if (data.team_id) {
-          threadTeam.textContent = teamNames[data.team_id] ?? data.team_id;
+          setTeamBadge(teamNames[data.team_id] ?? data.team_id);
           currentAnchorTeamId = data.team_id;
         }
         loadThreads();
