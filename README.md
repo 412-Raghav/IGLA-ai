@@ -1,318 +1,198 @@
 # IGLA — In-Game Leader AI
 
-Pre-match tactical intelligence for Valorant esports. Describe a scenario in
-plain English and get a scouting report grounded in real opponent data.
+**Pre-match tactical intelligence for Valorant esports: a hand-built RAG pipeline with per-user vector isolation, scope-gated retrieval, and evals that test the full serving path.**
 
-Most teams below the top tier don't have a dedicated analyst desk. IGLA is a
-stand-in for one: an analyst types a situation, the system pulls the relevant
-opponent intel out of a vector database, and Claude writes it up as a structured
-dossier. It's for prep, not live coaching — you use it before the match, not
-during the round.
+IGLA answers an in-game leader's pre-match questions — *"how does this opponent attack B on Lotus?"* — by retrieving scouting intel from a vector store, grounding a Claude prompt in it, and returning a tactical read. *(An IGL is a team's in-game shot-caller; before a match they need fast, specific intel on how the opponent plays.)* That's the domain. The rest of this README is about the engineering.
 
-Repo: https://github.com/412-Raghav/IGLA-ai
+I hand-rolled the retrieval pipeline instead of using a framework, to work directly with the primitives — embeddings, re-ranking, scope thresholds, prompt assembly. Three decisions define the system:
 
-## What retrieval actually does, measured
+- **The eval harness scores the served path, not just retrieval.** Testing retrieval alone misses whether the correct intel actually clears the scope gate to reach the model — so the evals measure both, which surfaced a gap between retrieval quality and what production would serve that a retrieval-only metric wouldn't show.
+- **Isolation is structural, not filtered.** Each user's scouting notes live in a separate vector collection, so one opponent's data can't surface in another's answers — access is denied by which collection opens, not by a `WHERE` clause.
+- **The model asserts only what the data contains.** Generation is separated from serving, with a human review gate before any generated intel enters the corpus.
 
-A working RAG demo is easy. A trustworthy one is the hard part, and the only way
-to know which one you have is to measure it. IGLA has an evaluation harness that
-scores retrieval against a frozen set of analyst queries, and the headline
-numbers are the honest ones:
+The through-line is honesty: measure the real number, deny access by construction, keep the model grounded in what it can support.
 
-| Metric | Result | What it means |
-|--------|--------|---------------|
-| Retrieval hit-rate@1 | **67%** | The single best document was ranked first |
-| Retrieval hit-rate@3 | **100%** | The correct document was in the top 3, every query |
-| Served@1 (deployed threshold) | **44%** | ...and survived the scope-gate to reach the analyst |
+## What it looks like
 
-That third row is the interesting one, and it's why this section leads the
-README instead of the demo. **Retrieval finds the right answer 67% of the time,
-but the deployed system only serves it 44% of the time** — a 23-point gap. Every
-prior metric reported the 67% and stopped. The 44% was invisible until the eval
-was taught to apply the exact scope-gate that production applies.
+![IGLA answering a pre-match question, grounded in retrieved scouting intel](docs/assets/igla-thread.png)
 
-The gap isn't a retrieval failure. It's a *threshold* miscalibrated to its
-embedder — three correct, top-ranked retrievals sit just past a distance cutoff
-that was tuned for a different embedding model. The fix is a recalibration, and
-why it isn't live yet is itself a deliberate call (see
-[The staged fix](#the-staged-fix-and-why-its-batched) below).
-
-Full per-query results, distances, and the failure analysis are in
-[`docs/EVAL.md`](docs/EVAL.md).
-
-## Demo
-
-Describe a pre-match scenario in plain language:
-
-![User input to IGLA](assets/ui-input.png)
-
-IGLA returns a structured tactical read. The opponent's behavioral profile is
-pulled from the knowledge base; the step-by-step plan is the model reasoning over
-that profile.
-
-![IGLA tactical brief](assets/ui-response.png)
-
-The full request path is visible in the logs — the scope-gate distance, the
-model call, and the response — captured from the running deployment:
-
-![Deployment logs](assets/production-logs.png)
+*A thread anchored to one opponent. The composer and badge track the team; answers are grounded in retrieved scouting intel.*
 
 ## How it works
 
-You send a natural-language situation and the id of the team you're scouting. The
-retriever finds the most relevant documents for that team, that context gets
-attached to the prompt, and Claude answers using it. The interesting parts are
-what's in the database and how retrieval is kept honest.
+The serving path for a single question:
 
-The store holds three kinds of document, all tagged by where they came from:
+```mermaid
+flowchart TD
+    Q[User query] --> R1[Gate-as-router<br/>anchor rewrite]
+    R1 --> E[Embed query]
+    E --> RET[Retrieve<br/>shared + per-user, merged]
+    RET --> RR[Team-first re-rank]
+    RR --> SG{Scope gate<br/>distance vs threshold}
+    RET -. best_distance, pre-re-rank .-> SG
+    SG -- pass --> AP[Assemble prompt<br/>team instructions + history]
+    AP --> C[Claude → answer]
+    SG -- reject --> RJ[Canned redirect<br/>out-of-scope]
+```
 
-- **Live player stats** scraped per team from a community stats site — agent
-  usage, roles, firepower, refreshed on a schedule.
-- **Generated team briefs** — one per team, written by Claude at build time from
-  a fact sheet assembled out of those stats.
-- **Hand-curated intel** — the deeper, specific tactical notes that a human
-  analyst would write.
+The query is rewritten to the thread's anchored opponent, embedded, and matched against two merged vector collections — a shared scouting corpus and the user's private notes. A team-first re-rank surfaces the anchored opponent's intel; a scope gate then checks whether anything is actually close enough to answer. It reads `best_distance` *snapshotted before* the re-rank — the gate judges genuine relevance, not the reshuffled order. Pass, and the prompt is assembled with the team's standing instructions and conversation history; reject, and the user gets a redirect instead of a hallucinated answer.
 
-Retrieval is scoped by team. A query about one opponent only searches that
-opponent's documents plus a shelf of universal theory (agent combos, timing
-principles), so a twelve-team corpus doesn't turn into twelve teams of noise.
+## Three engineering decisions
 
-## Engineering notes
+### 1. The eval harness scores the served path, not just retrieval
 
-The parts worth calling out, since a working RAG demo is easy and a trustworthy
-one isn't.
+Most RAG evaluation stops at retrieval: did the right document rank highly? That measures the retriever in isolation — not whether the correct intel survives the scope gate to reach the model as context.
 
-### The eval measures what production serves, not a parallel copy
+IGLA's harness scores both. On a frozen golden set, retrieval **hit@1 was 67%** — the right intel ranked first two-thirds of the time. But **served@1 — whether that intel also cleared the scope gate to become context — was 44%.**
 
-The scope-gate — the rule that decides whether the closest retrieved document is
-relevant enough to answer at all — is defined once, in a single function that
-both the serving path and the evaluation harness import. This is the reason the
-44%/67% gap above could be found: before the gate was shared, the eval scored
-*retrieval rank* while production applied a *distance cutoff* the eval never saw.
-The two silently measured different things. An eval that doesn't call the code
-production calls isn't measuring your system — it's measuring a fiction that
-happens to resemble it.
+The gap was the finding. The scope gate was rejecting correctly-ranked matches that no retrieval metric was watching: retrieval succeeded, the gate dropped it, and only an eval applying the same gate the serving path applies could see it. An earlier version of the harness had scored retrieval rank alone — while production applied a distance cutoff the eval never saw — so the two silently diverged.
 
-The harness runs without calling the model, so a bad answer can be blamed on
-retrieval or on writing, separately. It reports two numbers per cutoff:
-hit-rate@k (did retrieval rank the right doc?) and served@k (did that doc also
-clear the scope-gate?). The distance between them is the eval-vs-prod gap, made
-visible instead of assumed.
+served@1 is threshold-bound, not a modeling wall: the current rank-1 rejects sit just past a scope threshold (0.75) that was tuned for an earlier embedding model's distance distribution. Recalibrating to 0.855 — validated on the frozen set, still below the off-topic rejection floor — recovers all three, taking served@1 to 67% and served@3 to 100% with no change to retrieval. The number is a documented, measured tuning frontier, and I know exactly which lever moves it.
 
-### Grounding the generator by construction
+### 2. Isolation is structural, not filtered
 
-Asking a model to "only use these facts" and hoping is not a plan. A generator
-staring at a thin prompt will fill the gaps from its own training data and hand
-it to you as if it were real intel.
+A user uploads private scouting notes. Those notes must never surface in another user's answers.
 
-So the generated team briefs are grounded structurally, not by request. The model
-never sees the raw stats or anything else — it sees a single fact sheet built in
-plain Python, containing only what the stats actually support: role composition,
-agent pools, who carries by rating and combat score, and which players have too
-little data to judge. If a fact isn't on the sheet, the model has nothing to draw
-on to state it. A system prompt on top forbids it from asserting anything the
-stats can't contain (map calls, economy reads, round tendencies) and from
-dressing up its general Valorant knowledge as team-specific analysis.
+The common approach is a shared vector store with a `WHERE user_id = ?` filter on every query — one forgotten clause away from a leak. IGLA instead gives each user their own vector collection. A query merges the shared corpus with *that user's* collection and no other. Cross-user leakage isn't prevented by a filter that has to be correct every time; it's prevented because the other collection is never opened.
 
-Generation runs at temperature 0. For a grounded writer, variety is the failure
-mode — every bit of sampling randomness is a chance to wander off the sheet.
+This is the repo's governing principle — impossible-by-construction over unlikely-by-discipline — applied in several places: per-user collections, server-side sessions over JWTs, and 404-not-403 responses so the API never reveals whether a resource it won't show you exists.
 
-### A human gate that actually caught things
+### 3. The model asserts only what the data contains
 
-Nothing generated gets embedded without a person reading it first, against the
-exact fact sheet it was written from (the sheet is frozen and stored next to the
-output for that reason — stats drift, so the doc is judged against its own source,
-not a fresh pull).
+A tactical-intel LLM that invents specifics is worse than useless — it's confidently wrong to someone about to make a match-day decision.
 
-This isn't ceremony. The gate caught a brief that invented a roster structure the
-data contradicted, and another that called two different players the team's
-highest-rated in the same breath. Both were real errors that would have gone into
-the database silently otherwise. Both got fixed at the prompt level and
-regenerated.
+So generation is separated from serving. Strategy documents are LLM-generated offline, pass through a human review gate, and only then enter the corpus — never written straight to the store at request time. At serving time the model is instructed to ground every claim in retrieved intel; when nothing relevant is retrieved, the scope gate returns a redirect rather than letting the model fill the silence. The model is a court reporter, not a novelist.
 
-### Same model, two jobs, opposite risk
+## What I built instead of a framework
 
-At query time Claude reasons over documents that retrieval already pinned — it
-can't invent opponent intel, because the facts are in front of it. At build time,
-generating briefs from sparse input, it can invent freely. Those are two
-different risk profiles from one model, and the build-time path is why the fact
-sheet, the contract, and the human gate all exist. The query path doesn't need
-them; the generation path can't do without them.
+"Hand-rolled" means the RAG pipeline is assembled from named components I control directly, not orchestrated through an abstraction layer. Each stage is a small, testable unit:
 
-### The generator never touches the serving path
+| Stage | Implementation |
+|---|---|
+| Embedding | `sentence-transformers` (all-mpnet-base-v2, 768-dim), called directly |
+| Vector store | ChromaDB, one collection per user + a shared corpus |
+| Retrieval + re-rank | Custom merge of shared and per-user results, team-first re-ranking |
+| Relevance gate | Scope threshold on `best_distance`, snapshotted pre-re-rank |
+| Prompt assembly | Standing per-team instructions + windowed conversation history |
+| Generation | Anthropic SDK (Claude), called directly |
+| Serving | FastAPI, server-side sessions, per-user scoping enforced at the DB |
 
-Generation is a manual step an operator runs when a roster changes. The output is
-reviewed, committed, and loaded as cached text. The daily refresh re-scrapes stats
-and re-embeds them locally — it spends zero LLM tokens. The serving code doesn't
-import the generator at all. The cost model was a design decision, not an
-afterthought: putting generation inside the refresh would have quietly turned a
-free daily job into a paid one.
+Every stage is independently unit-tested and independently swappable.
 
-### Retrieval improvement was measured, not hoped for
+### Why not LangChain / LangGraph
 
-Top-1 retrieval was moved from a MiniLM baseline by injecting derived role
-metadata into the documents — a game-wide agent-to-role mapping that lets a
-jargon query like "best duelist" find a raw stat line it shares no words with.
-That's a measured improvement from a cheap technique, which reads better than
-swapping in a bigger model and hoping. The held-out golden set was never edited
-to recover a number — editing the test to pass it measures nothing — and it
-caught a real regression where a fix that helped one query broke another.
+For a pipeline this shape — one retrieval step, one re-rank, one gate, one generation call — an orchestration framework isn't necessary, and it adds an abstraction layer between me and the exact behavior I need to debug: what got retrieved, what distance the gate saw, what went into the prompt. LangChain's value is composing many chained steps across swappable providers; IGLA has a small, fixed pipeline and one provider, so that value doesn't apply here, while the cost — indirection over the parts I most need to inspect — does. Direct calls kept the retrieval and gating logic legible enough that the served-vs-retrieved eval gap was *findable*; behind a chain abstraction, that silent failure is harder to see.
 
-One honesty note the harness itself surfaced: on a nine-query set, single runs
-vary by up to one query between processes, because two similarly-distanced
-documents can tie for the top rank. The reported 67% is the modal result across
-repeated runs, not a single lucky print. Variance on a small eval is a real
-thing, and pretending a one-off number is stable is how eval theater starts.
+### Other deliberate omissions
 
-### Guardrails
+- **No GraphRAG** — the corpus is per-team scouting intel, not an entity graph; graph traversal solves a retrieval problem this data doesn't have.
+- **No LLM gateway / model routing** — one model, one provider. A routing layer is infrastructure for a problem I don't have yet.
+- **No prompt caching** — Claude's cache floor is 1024 tokens; the assembled system prompt is well under that, so `cache_control` would be inert. Not adding it (and knowing why) is the correct call.
 
-Three layers, each doing one job, described by what they actually do rather than
-what sounds good:
+## Stack
 
-- A **scope-gate** rejects anything that isn't a tactical question before the
-  model is ever called, based on how far the closest document sits from the
-  query. It doubles as a free spam filter — off-topic input is turned away for
-  zero tokens, before any model call.
-- User input and retrieved context are wrapped in **delimiters** that tell the
-  model to treat them as data, not instructions. This is hygiene, not a wall —
-  prompt injection isn't a solved problem industry-wide, and this doesn't pretend
-  to solve it.
-- **Rate limiting** on the query endpoint, in-memory and single-instance. A known
-  limitation is documented below: behind the platform's edge proxy the limiter
-  keys on a rotating internal address rather than the real client, so it throttles
-  bursts but is not true per-client limiting. The honest fix (trusting forwarded
-  headers, or a shared store) is scoped rather than claimed as done.
+**Pipeline** (see the table above): `sentence-transformers`, ChromaDB, Anthropic SDK (Claude), assembled directly.
 
-## The staged fix, and why it's batched
+**Application & serving**
+- **FastAPI** — REST API, server-side sessions (revoking a session is deleting a row, not blacklisting a JWT)
+- **PostgreSQL 16** via Docker Compose — users, conversations, per-team standing instructions
+- **SQLAlchemy 2.0 + Alembic** — ORM and migrations
+- **bcrypt** — password hashing
+- **slowapi** — IP-based rate limiting
+- **Python 3.13**
 
-The repository is ahead of what was last deployed, on purpose. The deployed
-service runs the older embedding model against a threshold calibrated for it. The
-staged changes — a stronger embedding model, a recalibrated scope-gate, and the
-required-`team_id` scoping that wires nine phases of retrieval work into the
-serving path — are verified locally but held as a single batched deploy rather
-than shipped piecemeal.
+**Testing & evaluation**
+- **115 tests** (unit + integration), pytest
+- **Frozen golden-set eval harness** — hit@k / served@k on the full serving path (see [Evaluation](#evaluation))
 
-The reason is that they're coupled. Scoped retrieval searches a subset, so its
-distances run higher than the unscoped path's; deploying it under the *old*
-threshold would reject correct answers that the old distances would have passed.
-The threshold and the embedder are a pair — changing one without the other makes
-production strictly worse. So: a commit is a unit of reasoning, and each of these
-is committed separately with its rationale; a deploy is a unit of risk, and these
-ship together or not at all.
+**Frontend**
+- Single-file vanilla JS — no build step, no framework. A hand-written sanitizing markdown renderer (builds DOM nodes directly, never `innerHTML`) keeps retrieved and generated content from becoming live markup.
 
-This is the honest state of a portfolio project: the engineering is done and
-measured, and the production cutover is a single deliberate step rather than a
-drift of half-changes.
+The choices skew boring on purpose: server-side sessions over JWTs (a single replica gains nothing from stateless tokens; revocation is trivial), Postgres over anything exotic, no frontend framework for a UI this size. Boring-where-it-can-be-boring is what leaves attention for the parts that aren't.
 
-## Tech stack
+## Evaluation
 
-| Layer         | Choice                                        |
-|---------------|-----------------------------------------------|
-| Language      | Python 3.13                                   |
-| LLM           | Anthropic Claude (Sonnet)                     |
-| Vector DB     | ChromaDB (local, persistent)                  |
-| Embeddings    | all-MiniLM-L6-v2 (deployed) / all-mpnet-base-v2 (staged) |
-| API           | FastAPI + Uvicorn                             |
-| Data source   | Unofficial community Valorant stats client    |
-| Deployment    | Railway (web service + separate cron service) |
+The eval harness answers one question honestly: *does the system serve the right intel?* — not *does the retriever rank it well?* Those are different questions, and conflating them is how RAG systems pass their tests and fail their users. The harness calls no model; it scores retrieval and the scope gate, so a bad end-to-end answer can be attributed to retrieval or generation separately.
 
-Dependencies are pinned to exact versions so the build is reproducible.
+**Metrics**, on a frozen golden set of nine analyst-style queries with verified answers:
+
+| Metric | Score | Meaning |
+|---|---|---|
+| hit@1 | 67% | Correct intel ranked first |
+| hit@3 | 100% | Correct intel in the top 3 |
+| served@1 | 44% | Correct intel ranked first **and** cleared the scope gate |
+| served@3 | 67% | Correct intel in the top 3 **and** cleared the gate |
+
+`hit@k` measures retrieval; `served@k` adds the scope gate — whether production would actually surface that intel to the model. **hit@3 100% / served@3 67%** is the gap in one line: the right intel is always retrievable, but the gate drops some of it before it becomes context. That gap is the tuning surface, and it's visible only because the harness applies the same gate the serving path applies.
+
+**Discipline that keeps the numbers honest:**
+
+- **The eval applies production's gate.** `served@k` calls the exact `passes_scope_gate()` function the serving path uses. Before that, the eval scored rank while production applied a distance cutoff the eval never saw — the two silently diverged. An eval that doesn't share production's decision logic is measuring a fiction.
+- **The golden set is frozen and held out.** Answer keys are verified from evidence before measuring, and the set is never edited to recover a number — a change is judged by its effect on the whole set, not the one query it targeted.
+- **Threshold and embedder are a coupled pair.** A distance threshold is only meaningful for the embedding distribution it was tuned on, so the served@1 gap is a calibration artifact (0.75 predates the current model), not a retrieval failure — recalibrating to 0.855 recovers it.
+- **Modal, not best-print.** Repeated runs vary by up to one query from a cross-process near-tie; the reported 67% hit@1 is the modal result across runs, not the single run that printed 78%.
+
+Full per-query breakdown, both thresholds, and the determinism analysis: [`EVAL.md`](EVAL.md).
+
+## The failure doesn't look like its cause
+
+The same pattern kept recurring across this build: the symptom pointed nowhere near the root, and chasing the symptom was always wrong. Naming the pattern is how I stopped repeating it. Three instances:
+
+**Retrieval work that never reached the serving path.** The evals said retrieval was strong. The app served weak answers. The instinct was to blame retrieval quality — embeddings, chunking, the re-rank. The actual cause: the eval was scoring retrieval rank while production applied a scope-gate the eval never measured, so retrieval improvements were real *and* invisible to users at the same time. The lesson became a rule: **an eval that doesn't apply production's decision logic is measuring a fiction** — which is why the harness now shares the scope-gate function.
+
+**A threshold that "broke" when nothing about it changed.** After an embedding-model change, the scope gate started rejecting good matches. The threshold value was untouched — so the threshold looked innocent. But a distance threshold isn't a constant; it's a constant *relative to an embedding model's distance distribution*, and that distribution had shifted underneath it. The threshold didn't change and was still wrong. Threshold and embedder are a **coupled pair** — they move together or the gate silently miscalibrates.
+
+**Tests passing against a server that wasn't running.** A test run went green while the code under test was broken. The cause: an orphaned `uvicorn` process from an earlier session still held the port, so the tests hit a *stale* server while the freshly-started one crashed on bind — unnoticed. The passing tests were real; they were testing the wrong process. The lesson is the one I now apply everywhere: **verify the running artifact, not the source** — a green check against the wrong process is worse than a red one.
+
+The thread through all three: the system lies to you in the direction of your assumptions. The eval assumed retrieval was the product. The threshold assumed its own stability. The tests assumed the server was the one they meant. Every real bug in this project was found by distrusting a signal that looked fine.
 
 ## Running it locally
 
+Requires Docker and Python 3.13.
+
 ```bash
+# 1. Start Postgres
+docker compose up -d db
+
+# 2. Install dependencies
 python -m venv venv
-venv\Scripts\activate           # Windows
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-Set your Anthropic API key in a `.env` file, then populate the database:
+# 3. Configure — copy the example and add your Anthropic API key
+cp .env.example .env
 
-```bash
+# 4. Seed the vector store (run once)
 python ingest.py
+
+# 5. Run
+uvicorn api:app
 ```
 
-Query it directly:
+Open `http://127.0.0.1:8000`, create an account, and start a thread against an opponent.
 
+**Tests:**
 ```bash
-python main.py
+pytest -m "not integration"     # unit
+pytest                          # full suite
 ```
 
-Or run the API:
-
+**Evals:**
 ```bash
-uvicorn api:app --reload
+python -m evals.run_eval                    # deployed threshold (0.75)
+python -m evals.run_eval --threshold 0.855  # recalibrated cutoff
 ```
 
-Run the retrieval eval (no model calls, no tokens spent):
+## Known limitations
 
-```bash
-python -m evals.run_eval                    # scores against the config threshold
-python -m evals.run_eval --threshold 0.855  # scores against an alternate cutoff
-```
+Documented honestly, because knowing a system's edges is part of building it.
 
-## API
+- **served@1 is a tuning frontier.** 44% at the deployed scope threshold (0.75); recalibrating to 0.855 recovers it to 67% on the frozen set (validated, not yet promoted to the deployed default). Calibration work, not a modeling wall — see [Evaluation](#evaluation).
+- **Two jargon queries land at rank 2, not rank 1.** `entry fragger` and `primary initiator` retrieve the correct player into the top 3 (hit@3 is 100%) but not as the single top result — closing that gap is embedding-quality work, tracked rather than hand-tuned to pass the set. A third probe, `main controller`, is ill-posed for a roster that runs two controllers: there's no single ground-truth answer.
+- **The markdown renderer handles a bounded subset.** Paragraphs, bold, italic, lists, headings, code, and links render; tables and code fences degrade to plain text. This is deliberate — the renderer builds DOM nodes directly and never touches `innerHTML`, so no retrieved or generated content can become live markup. Table support is a scoped future addition, not a fix.
+- **Cold-boot latency.** ChromaDB's default embedding model re-downloads (~8s) on a cold boot because its cache path isn't configurable; no effect on warm restarts or request latency. Tracked, deferred to the embedding-model upgrade.
+- **Not deployed to a live URL.** The portfolio value here is the repository, the eval discipline, and the architecture — not a warm server idling at cost. It redeploys in minutes for a live demo.
 
-```
-POST /ask
-{ "situation": "how should we defend against a fast B execute", "team_id": 624 }
-```
+## Data
 
-`team_id` is required and validated against the tracked-team registry — an
-untracked id is rejected at the API boundary rather than degrading into a
-misleading scope-gate rejection. `GET /teams` serves the registry for a client
-picker. `GET /health` is an unauthenticated liveness check. Refreshing the live
-data is behind a secret-protected endpoint, triggered on a schedule by a separate
-cron service rather than an in-process timer.
-
-## Limitations, and what was done about them
-
-Every real system has edges. These are IGLA's, and what each one got instead of
-being ignored.
-
-**The eval-vs-prod gap.** Covered up top because it's the most important one:
-retrieval ranks correctly more often than the deployed threshold lets through.
-Found by the harness, quantified (67% vs 44%), and traced to a threshold-embedder
-mismatch rather than hidden. The fix is staged; see above.
-
-**Rate limiting behind an edge proxy.** The in-memory limiter keys on the client
-address the app sees, which behind the deployment platform's proxy is a rotating
-internal IP, not the real client. It throttles burst abuse but is not true
-per-client limiting. Diagnosed from production access logs. The fix — configuring
-the server to trust forwarded headers, and/or a shared store for multi-instance —
-is scoped as real work, not claimed as done.
-
-**Data freshness.** Rosters and stats come from a community site, and that feed
-can lag reality — a benched or newly-signed player might linger in a team's
-profile, or not appear yet, for a while after a change. The stats window is also
-wide enough that experimental play at exhibition events can colour a team's
-tendencies. The time window is a parameter you can tighten during active season,
-and the pre-match framing means the analyst reading the report already knows
-who's actually playing. The proper fix — cross-checking a second source and
-reconciling disagreements — is genuinely its own piece of work (matching one
-player across two sites is harder than it looks), scoped as a future phase instead
-of bolted on badly.
-
-**Retrieval on jargon-heavy queries.** The retriever sometimes ranks a general
-tactical document above the specific answer, because the embedding model treats
-dense tactical vocabulary as broadly relevant. The harness found it; the cause
-was diagnosed (universal theory documents sit in every team's candidate pool and
-out-rank team-specific ones on shared keywords). Two fixes are on the table: the
-team-first re-rank already in place, which recovers hit-rate@3 to 100%, and a
-stronger embedding model validated against the same harness. Documented and
-measured rather than patched in a hurry that could regress other queries.
-
-**Scope.** Pre-match only. It doesn't do live in-round coaching and isn't meant
-to.
-
-**No SLA on the data source.** The stats client is an unofficial community
-project. Coverage is good, but if the underlying site changes, ingestion needs
-updating.
-
-## What's next
-
-- Letting users upload their own scouting notes and scrims into a team's context.
-- A focus control so an analyst can point the system at one opponent and steer the
-  prompt from the UI.
-- User accounts, so history and per-user on-demand refresh become possible.
-- Cross-source data integrity — reconciling the stats feed against a second source
-  to catch the roster-lag problem above.
+Scouting intel is sourced from `vlrdevapi`, an unofficial community API for Valorant match data — labeled as such and used only for this non-commercial portfolio project. Team and player data is public competitive-match information. Generated strategy documents pass through a human review gate before entering the corpus; no intel is written to the store unreviewed.
